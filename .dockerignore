@@ -1,0 +1,9 @@
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+.DS_Store
+frontend/node_modules
+frontend/dist
+data/*.sqlite3
+data/*.sqlite3-*
