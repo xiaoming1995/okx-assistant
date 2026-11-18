@@ -346,7 +346,7 @@ test("market AI outlook uses content-sized responsive reading blocks", () => {
   assert.match(styles, /@media \(max-width: 1120px\)[\s\S]*?\.marketAiReading,[\s\S]*?grid-template-columns: 1fr;/);
   assert.match(styles, /@media \(max-width: 760px\)[\s\S]*?\.marketAiFactList\s*\{[\s\S]*?grid-template-columns: 1fr;/);
   assert.match(styles, /@media \(max-width: 760px\)[\s\S]*?\.marketAiForecastGrid,[\s\S]*?\.marketAiForecastGrid\.count-2,[\s\S]*?\.marketAiForecastGrid\.count-3\s*\{[\s\S]*?grid-template-columns: 1fr;/);
-  assert.match(styles, /\.marketAiDecision\s*\{[\s\S]*?border-radius: 12px;[\s\S]*?padding: 14px;[\s\S]*?\}/);
+  assert.match(styles, /\.marketAiDecision\s*\{[\s\S]*?border-radius: 12px;[\s\S]*?padding: 16px;[\s\S]*?\}/);
   assert.match(styles, /\.marketAiStructureGrid\s*\{[\s\S]*?grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);[\s\S]*?\}/);
   assert.match(styles, /\.marketAiConfirmationCandidateGrid\s*\{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[\s\S]*?\}/);
   assert.match(styles, /\.marketAiConfirmationCandidateGrid article\.bullish\s*\{[\s\S]*?border-color: #9bd9b8/);

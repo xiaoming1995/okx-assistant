@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
+import { transformSync } from "esbuild";
 
 const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
-const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("direct AI and trading-data entry default to USDT settled browsing", () => {
   assert.match(source, /initialFilter=\{marketWorkbenchInitialFilter \?\? \(marketTab === "chart" \? "watch" : "usdt"\)\}/);
@@ -18,7 +20,7 @@ test("market instrument search filters the loaded list locally", () => {
   assert.match(source, /instrumentMatchesKeyword\(item, keyword\)/);
   assert.match(source, /displaySymbol\.includes\(keyword\)/);
   assert.match(source, /assetName\.includes\(keyword\)/);
-  assert.match(source, /fetch\(`\$\{API_BASE\}\/api\/instruments\?limit=500`\)/);
+  assert.match(source, /fetch\(`\$\{API_BASE\}\/api\/instruments\?limit=2000`\)/);
   assert.doesNotMatch(source, /query=\$\{encodeURIComponent\(query\)\}/);
 });
 
@@ -152,7 +154,7 @@ test("market-facing daily changes use the UTC+8 day-open baseline consistently",
   assert.match(source, /function tickerTodayChange\(ticker: Ticker \| null \| undefined\) \{\s*return tickerChangeFromBases\(ticker, \["sodUtc8"\]\);\s*\}/s);
   assert.match(source, /function tickerChangeFromBases\(ticker: Ticker \| null \| undefined, baseKeys: string\[\]\)/);
   assert.match(source, /\.find\(\(value\): value is number => value !== null && value !== 0\)/);
-  assert.match(source, /const leftChange = tickerTodayChange\(leftTicker\)\.percent \?\? -Infinity;/);
+  assert.match(source, /const leftChange = relevanceRank\(tickerTodayChange\(leftTicker\)\.percent\);/);
   assert.match(source, /const itemChange = tickerTodayChange\(itemTicker\);/);
   assert.match(source, /const dayChange = tickerTodayChange\(selectedTicker\);/);
   assert.match(source, /今日涨跌（按 UTC\+8 日开盘价计算）/);
@@ -168,4 +170,58 @@ test("market percentage values are limited to two decimal places", () => {
   assert.match(source, /formatSignedPercent\(itemChange\.percent\)/);
   assert.match(source, /formatSignedPercent\(dayChange\.percent\)/);
   assert.match(source, /formatSignedPercent\(detailCandlePercent\)/);
+});
+
+test("contract relevance sorts by quote turnover, not raw base-coin counts", () => {
+  assert.match(source, /function instrumentQuoteTurnover\(/);
+  assert.match(source, /function relevanceRank\(/);
+  assert.match(source, /const explicitSort = options\.sortMode !== "default";/);
+  assert.doesNotMatch(source, /instrumentTickerVolume/);
+  assert.match(styles, /\.instrumentSubtitle\s*\{[\s\S]*?-webkit-line-clamp: 2;/);
+
+  const helper = source.slice(
+    source.indexOf("function instrumentQuoteTurnover("),
+    source.indexOf("function contractsToAmounts(")
+  );
+  const compareInstrumentRelevance = runInNewContext(
+    `${transformSync(helper, { loader: "ts" }).code}; compareInstrumentRelevance`,
+    {
+      toNumber: (value) =>
+        value === undefined || value === null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value),
+      tickerTodayChange: (ticker) => {
+        const last = Number(ticker?.last);
+        const base = Number(ticker?.sodUtc8);
+        if (!ticker || !Number.isFinite(last) || !Number.isFinite(base) || base === 0) return { percent: null };
+        return { percent: ((last - base) / base) * 100 };
+      },
+      instrumentSettlementKind: () => "usdt"
+    }
+  );
+
+  const instruments = [
+    { inst_id: "SATS-USDT-SWAP", state: "live", watched: false, ct_val: "1000" },
+    { inst_id: "BTC-USDT-SWAP", state: "live", watched: false, ct_val: "0.01" },
+    { inst_id: "ETH-USDT-SWAP", state: "live", watched: false, ct_val: "0.1" }
+  ];
+  const tickers = {
+    "SATS-USDT-SWAP": { last: "0.000000008421", volCcy24h: "62254890000000", sodUtc8: "0.000000008" },
+    "BTC-USDT-SWAP": { last: "68600", volCcy24h: "158700.6356", sodUtc8: "68000" },
+    "ETH-USDT-SWAP": { last: "1929.83", volCcy24h: "4174057.355", sodUtc8: "1900" }
+  };
+  const sortIds = (rows, sortMode) =>
+    [...rows]
+      .sort((left, right) => compareInstrumentRelevance(left, right, { sortMode, tickers, selectedInstId: "" }))
+      .map((row) => row.inst_id);
+
+  // 6.2e13 个 SATS 只值约 52 万 USDT，不应凭数字量级排在 BTC/ETH 前面。
+  assert.deepEqual(sortIds(instruments, "default"), ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SATS-USDT-SWAP"]);
+  assert.deepEqual(sortIds(instruments, "volume"), ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SATS-USDT-SWAP"]);
+
+  const withWatch = instruments.map((row) => ({ ...row, watched: row.inst_id === "BTC-USDT-SWAP" }));
+  assert.deepEqual(sortIds(withWatch, "default"), ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SATS-USDT-SWAP"]);
+  // 显式按涨跌排序时关注状态不再插队，SATS 涨幅最大应排第一。
+  assert.deepEqual(sortIds(withWatch, "change"), ["SATS-USDT-SWAP", "ETH-USDT-SWAP", "BTC-USDT-SWAP"]);
+
+  const withMissing = [...instruments, { inst_id: "ZZZ-USDT-SWAP", state: "live", watched: false, ct_val: "1" }];
+  assert.equal(sortIds(withMissing, "change").at(-1), "ZZZ-USDT-SWAP");
 });

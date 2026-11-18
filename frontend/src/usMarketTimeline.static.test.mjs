@@ -24,6 +24,9 @@ test("美国事件时间轴以选中日期附近的紧凑事件流展示，并�
   assert.match(source, /美联储新闻发布会（美国）/);
   assert.match(source, /Producer Price Index": "美国 PPI（生产者物价指数）"/);
   assert.match(source, /Consumer Price Index": "美国 CPI（消费者物价指数）"/);
+  assert.match(source, /<strong>\{usEventDisplayTitle\(event\)\}<\/strong>/);
+  assert.match(source, /aria-label=\{`\$\{usEventDisplayTitle\(event\)\} 的官方来源/);
+  assert.match(source, /usEventProviderLabel\(item\.provider\)/);
   assert.match(source, /暂无已验证预期/);
   assert.match(source, /usEventContext/);
   assert.match(source, /policyFacts/);

@@ -8,6 +8,7 @@ import hashlib
 from html import unescape
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -57,6 +58,18 @@ from .realtime import (
     normalize_inst_ids,
     normalize_subscription_message,
 )
+from . import market_context, order_pnl
+from .automation import (
+    AutomationExecutionError,
+    EvaluationContext,
+    ExecutionGuard,
+    classify_signal_action,
+    EXIT_SKIP_KEYS,
+    client_order_id_for_execution,
+    decide as decide_automation_risk,
+    execution_key,
+    global_block_from_state,
+)
 
 
 SUPPORTED_BARS = {"1m", "5m", "15m", "1H", "4H", "1D"}
@@ -78,6 +91,18 @@ ORDER_BOOK_RETRY_MS = 5_000
 PLATFORM_VOLUME_CACHE_MS = 60_000
 PLATFORM_VOLUME_MAX_AGE_MS = 15 * 60_000
 PLATFORM_VOLUME_RETRY_MS = 30_000
+# Multi-period contract turnover is derived from real OKX 1D candles (volumeQuote),
+# not from multiplying the single 24h platform snapshot. The official
+# platform-24-volume endpoint only exposes a rolling 24h point with no history.
+VOLUME_HISTORY_SNAPSHOT_KEY = "volume_history_snapshot"
+VOLUME_HISTORY_CACHE_MS = 60 * 60_000
+VOLUME_HISTORY_MAX_AGE_MS = 24 * 60 * 60_000
+VOLUME_HISTORY_RETRY_MS = 60_000
+VOLUME_HISTORY_TOP_N = 40
+VOLUME_HISTORY_BAR = "1D"
+VOLUME_HISTORY_RECENT_LIMIT = 300
+VOLUME_HISTORY_EXTENSION_LIMIT = 100
+VOLUME_HISTORY_MAX_WORKERS = 4
 ACCOUNT_REFRESH_BACKOFF_BASE_MS = 5_000
 ACCOUNT_REFRESH_BACKOFF_MAX_MS = 60_000
 MARKET_STATS_SUPPORTED_PERIODS = {"5m", "15m", "30m", "1H", "2H", "4H", "6H", "12H", "1D"}
@@ -194,8 +219,27 @@ POSITION_SIDES = {"net", "long", "short"}
 ORDER_TYPES = {"market", "limit", "post_only", "fok", "ioc", "optimal_limit_ioc"}
 ORDER_TYPES_WITH_PRICE = {"limit", "post_only", "fok", "ioc"}
 ORDER_TAG = "OKXQUANTDEMO"
+# 交易所侧止盈止损条件单（P2-2）：默认关闭，灰度开启后仅作用于 simulated_auto。
+EXCHANGE_ALGO_TPSL_ENABLED = os.getenv("OKX_ENABLE_EXCHANGE_ALGO_TPSL", "").strip().lower() in {"1", "true", "yes", "on"}
+ALGO_TRIGGER_PRICE_TYPE = "mark"  # 触发价基准：last / index / mark（需模拟盘实测确认支持）
+ALGO_ORDER_PX_MARKET = "-1"  # OKX 语义：触发后以市价单发出
+ALGO_STATES = {"pending", "attached", "triggered", "cancelled", "orphan"}
+# 订单来源（发起方）：区分用户手动操作与自动化策略触发，用于订单记录分开展示。
+ORDER_ORIGIN_MANUAL = "manual"
+ORDER_ORIGIN_AUTOMATION = "automation"
+ORDER_ORIGINS = {ORDER_ORIGIN_MANUAL, ORDER_ORIGIN_AUTOMATION}
 ORDER_CACHE_MS = 5_000
 ORDER_STALE_MS = 60_000
+# 服务端下单强校验：名义价值下限（USDT），低于此值 OKX 通常拒单。以合约面值
+# ctVal × 张数 × 委托价估算；市价单无委托价时跳过该项，交由 OKX 兜底。
+MIN_ORDER_NOTIONAL_USDT = Decimal("5")
+# OKX 账单结算盈亏缓存：账单是已结算的不可变流水，无需高频拉取。
+SETTLEMENT_CACHE_MS = 30_000
+SETTLEMENT_STALE_MS = 600_000
+# 市场上下文缓存：给 LLM 的大盘/赛道/情绪摘要。10 秒轮询下无需每轮重拉，
+# 60 秒刷新即可；拉取失败时 15 分钟内可复用旧快照，避免信号因大盘数据抖动被拖垮。
+MARKET_CONTEXT_CACHE_MS = 60_000
+MARKET_CONTEXT_STALE_MS = 900_000
 AUTOMATION_INTERVAL_SECONDS = 10
 AUTOMATION_TEMPLATES = {"ma_cross", "llm_direct"}
 AUTOMATION_EXECUTION_MODES = {"signal_only", "simulated_auto"}
@@ -204,6 +248,10 @@ AUTOMATION_LLM_MIN_CONFIDENCE = 70
 AUTOMATION_LLM_LOOKBACK_CANDLES = 120
 AUTOMATION_LLM_PROMPT_CANDLES = 60
 AUTOMATION_GLOBAL_STATE_KEY = "automation_global_state"
+AUTOMATION_EXECUTION_GUARD_KEY = "automation_execution_guard"
+AUTOMATION_EVAL_MAP_PREFIX = "automation_eval_map:"
+AUTOMATION_MAX_INST_IDS = 10
+AUTOMATION_DAILY_TIMEZONE = timezone(timedelta(hours=8))
 LLM_DEFAULT_TIMEOUT_SECONDS = 20
 LLM_DIRECT_MIN_TIMEOUT_SECONDS = 20
 LLM_CONFIG_KEY = "llm_signal_config"
@@ -223,23 +271,72 @@ RADAR_ONE_HOUR_CANDLE_COUNT = 4
 RADAR_LLM_EXPLAIN_LIMIT = 10
 RADAR_MARKET_TOP_LIST_LIMIT = 8
 RADAR_MARKET_LEADER_LIMIT = 10
+RADAR_SENTIMENT_ENRICH_LIMIT = 24
 RADAR_PLAYABLE_QUOTE_VOLUME = Decimal("10000000")
 RADAR_SCHEMA_VERSION = 4
 LLM_PROVIDERS = {"openai_compatible", "custom"}
-LLM_MODES = {"explain_only", "review", "direct_signal"}
-LLM_PROMPT_VERSION = "signal-analysis-v1"
+LLM_FIXED_MODE = "direct_signal"
+LLM_PROMPT_VERSION = "signal-analysis-v3"
 LEGACY_LLM_SYSTEM_PROMPT = (
     "你是一个谨慎的永续合约量化交易信号分析助手。"
     "只基于输入的结构化数据分析，不编造不存在的行情。"
     "你的输出必须是 JSON，不要输出 Markdown。"
     "LLM 不能直接下单，只能解释或复核候选信号。"
 )
-DEFAULT_LLM_SYSTEM_PROMPT = (
+# 上一版默认文案：已保存过旧默认值的配置需要自动迁移到新版，否则优化不生效。
+PREVIOUS_LLM_SYSTEM_PROMPT = (
     "你是一个谨慎的永续合约量化交易信号分析助手。"
     "只基于输入的结构化数据分析，不编造不存在的行情。"
     "你可以输出做多、做空或观望信号，但不能声称已经下单。"
     "系统会独立执行风控，自动执行仅限 OKX 模拟盘。"
     "你的输出必须是 JSON，不要输出 Markdown。"
+)
+# v2 默认文案：同样需要自动迁移到 v3，否则已保存 v2 的用户看不到大盘上下文引导。
+PREVIOUS_V2_LLM_SYSTEM_PROMPT = (
+    "你是 OKX 永续合约的交易信号分析师，只依据输入的结构化 K 线与账户数据判断，不编造行情或消息面。\n"
+    "\n"
+    "【分析框架】按顺序综合判断，不要只看单一指标：\n"
+    "1) 趋势结构：MA5/MA20/MA60 的排列与价格所处位置，判定上升、下降或震荡；\n"
+    "2) 动量位置：changePct、近 20 根高低区间与当前价在区间中的相对位置；\n"
+    "3) 量价配合：volume20Avg 与近期量能是否支撑价格方向；\n"
+    "4) 信号一致性：与 recent_signals 的判断是否自洽。\n"
+    "\n"
+    "【决策原则】\n"
+    "- 风险优先：证据不足、多空矛盾或震荡无方向时输出 hold 并给低置信度，不为凑方向强行看多或看空。\n"
+    "- 已有同向持仓倾向 hold 避免重复加仓；持仓方向与判断相反时在 notes 明确提示。\n"
+    "- 置信度表示证据充分度而非预期收益：90 以上表示多框架强共振且趋势明确；70-89 表示主要证据一致但有次要矛盾；50-69 表示分歧较大；低于 50 表示证据不足或互相矛盾。\n"
+    "\n"
+    "【输出纪律】\n"
+    "- 只输出一个 JSON 对象，不要 Markdown 或额外解释文字。\n"
+    "- action 只能是 long、short 或 hold。\n"
+    "- reasons 与 risks 每条一句话并引用具体数值（均线、涨跌幅、价位），不要写空话。\n"
+    "- invalidation 必须是具体、可验证的失效条件（例如跌破 MA20 且收盘确认、价格回到某价位下方）。\n"
+    "- 系统独立执行风控，仅在 OKX 模拟盘自动下单；你不直接下单，也不要声称已经下单。"
+)
+DEFAULT_LLM_SYSTEM_PROMPT = (
+    "你是 OKX 永续合约的交易信号分析师，只依据输入的结构化数据判断，不编造行情或消息面。\n"
+    "\n"
+    "【分析框架】自上而下、按顺序综合判断，先环境后个币：\n"
+    "0) 市场环境：先看 market_context 的 bias（risk-on/mixed/risk-off）、BTC/ETH 24h 涨跌、全市场涨跌家数占比、各赛道强弱，判断当前是顺势、逆势还是震荡环境；\n"
+    "1) 趋势结构：MA5/MA20/MA60 的排列与价格所处位置，判定上升、下降或震荡；\n"
+    "2) 动量位置：changePct、近 20 根高低区间与当前价在区间中的相对位置；\n"
+    "3) 量价配合：volume20Avg 与近期量能是否支撑价格方向；\n"
+    "4) 情绪与一致性：sentiment 的资金费率与多空倾向，与 recent_signals 的判断是否自洽。\n"
+    "\n"
+    "【决策原则】\n"
+    "- 环境优先：大盘 risk-off 时对做多更谨慎、risk-on 时对做空更谨慎；个币信号与大盘方向冲突时降低置信度，并在 risks 写明冲突点。\n"
+    "- 赛道共振：个币所属赛道明显强于或弱于大盘时，可作为方向确认的加分或减分项。\n"
+    "- 风险优先：证据不足、多空矛盾或震荡无方向时输出 hold 并给低置信度，不为凑方向强行看多或看空。\n"
+    "- 已有同向持仓倾向 hold 避免重复加仓；持仓方向与判断相反时在 notes 明确提示。\n"
+    "- 置信度表示证据充分度而非预期收益：90 以上表示大盘与个币强共振且趋势明确；70-89 表示主要证据一致但有次要矛盾；50-69 表示分歧较大；低于 50 表示证据不足或互相矛盾。\n"
+    "\n"
+    "【输出纪律】\n"
+    "- 只输出一个 JSON 对象，不要 Markdown 或额外解释文字。\n"
+    "- action 只能是 long、short 或 hold。\n"
+    "- reasons 与 risks 每条一句话并引用具体数值（大盘涨跌、赛道强弱、均线、涨跌幅、价位），不要写空话。\n"
+    "- invalidation 必须是具体、可验证的失效条件（例如跌破 MA20 且收盘确认、价格回到某价位下方）。\n"
+    "- 若 market_context.available 为 false，说明本次缺少大盘数据，应更保守并降低置信度。\n"
+    "- 系统独立执行风控，仅在 OKX 模拟盘自动下单；你不直接下单，也不要声称已经下单。"
 )
 
 settings = Settings.from_env()
@@ -259,6 +356,8 @@ ticker_cache: dict[str, Any] = {
 }
 platform_volume_cache_lock = RLock()
 platform_volume_cache: dict[str, Any] = {"snapshot": None, "receivedAt": 0, "refreshing": False, "nextRetryAt": 0}
+volume_history_cache_lock = RLock()
+volume_history_cache: dict[str, Any] = {"snapshot": None, "receivedAt": 0, "refreshing": False, "nextRetryAt": 0}
 radar_cache_lock = RLock()
 radar_cache: dict[str, Any] = {"payload": None, "ts": 0, "cacheKey": ""}
 radar_analysis_cache_lock = RLock()
@@ -294,6 +393,10 @@ account_cache: dict[str, Any] = {
 }
 order_cache_lock = RLock()
 order_cache: dict[tuple[str, str], dict[str, Any]] = {}
+settlement_cache_lock = RLock()
+settlement_cache: dict[str, dict[str, Any]] = {}
+market_context_cache_lock = RLock()
+market_context_cache: dict[str, Any] = {"payload": None, "ts": 0}
 candle_refresh_lock = RLock()
 candle_refreshing: set[tuple[str, str]] = set()
 trading_environment_lock = RLock()
@@ -305,6 +408,24 @@ automation_state: dict[str, Any] = {
     "lastRunAt": 0,
     "warning": "",
 }
+
+
+def _load_automation_execution_guard() -> str | None:
+    if not hasattr(database, "get_app_setting"):
+        return None
+    return database.get_app_setting(AUTOMATION_EXECUTION_GUARD_KEY)
+
+
+def _save_automation_execution_guard(value: str) -> None:
+    if hasattr(database, "set_app_setting"):
+        database.set_app_setting(AUTOMATION_EXECUTION_GUARD_KEY, value, now_ms())
+
+
+automation_execution_guard = ExecutionGuard(
+    load=_load_automation_execution_guard,
+    save=_save_automation_execution_guard,
+    logger=logger,
+)
 
 app = FastAPI(title="OKX Perpetual Futures Dashboard")
 app.add_middleware(
@@ -325,12 +446,15 @@ class PlaceSimOrderRequest(BaseModel):
     sz: str = Field(min_length=1, max_length=40)
     px: Optional[str] = Field(default=None, max_length=40)
     reduceOnly: bool = False
+    environment: Optional[str] = Field(default=None, max_length=16)
+    clOrdId: Optional[str] = Field(default=None, max_length=32)
 
 
 class CancelSimOrderRequest(BaseModel):
     instId: str = Field(min_length=1, max_length=64)
     ordId: Optional[str] = Field(default=None, max_length=64)
     clOrdId: Optional[str] = Field(default=None, max_length=32)
+    environment: Optional[str] = Field(default=None, max_length=16)
 
 
 class ClosePositionRequest(BaseModel):
@@ -339,6 +463,7 @@ class ClosePositionRequest(BaseModel):
     posSide: str = "net"
     ccy: Optional[str] = Field(default=None, max_length=20)
     autoCxl: bool = False
+    environment: Optional[str] = Field(default=None, max_length=16)
 
 
 class SetLeverageRequest(BaseModel):
@@ -346,6 +471,7 @@ class SetLeverageRequest(BaseModel):
     mgnMode: str = "cross"
     lever: str = Field(min_length=1, max_length=16)
     posSide: str = "net"
+    environment: Optional[str] = Field(default=None, max_length=16)
 
 
 class TradingEnvironmentRequest(BaseModel):
@@ -355,7 +481,9 @@ class TradingEnvironmentRequest(BaseModel):
 class AutomationStrategyRequest(BaseModel):
     name: str = Field(default="LLM BTC 5m 自动策略", min_length=1, max_length=80)
     enabled: bool = False
-    instId: str = Field(default="BTC-USDT-SWAP", min_length=1, max_length=64)
+    instId: str = Field(default="BTC-USDT-SWAP", max_length=64)
+    instIds: list[str] = Field(default_factory=list, max_length=32)
+    dailyPositionPct: str = Field(default="0", min_length=1, max_length=40)
     bar: str = "5m"
     template: str = "llm_direct"
     executionMode: str = "simulated_auto"
@@ -402,7 +530,7 @@ class LlmConfigRequest(BaseModel):
     temperature: float = Field(default=0.2, ge=0, le=2)
     maxTokens: int = Field(default=800, ge=128, le=4000)
     timeoutSeconds: int = Field(default=LLM_DEFAULT_TIMEOUT_SECONDS, ge=3, le=60)
-    mode: str = "explain_only"
+    mode: str = LLM_FIXED_MODE
     systemPrompt: str = Field(default=DEFAULT_LLM_SYSTEM_PROMPT, max_length=4000)
 
 
@@ -498,6 +626,18 @@ def normalize_trading_environment(environment: str) -> str:
 
 def environment_label(environment: str) -> str:
     return "虚拟盘" if environment == "simulated" else "真实盘"
+
+
+def resolve_request_environment(request_environment: str | None) -> str:
+    """优先采用写请求显式携带的 environment，缺省时回退进程当前环境。
+
+    多标签/并发场景下，用户看到的页面环境与进程全局环境可能短暂不一致。
+    下单、撤单、平仓、杠杆等写操作显式携带页面环境后，后端以请求环境为准，
+    避免「A 标签切到真实盘导致 B 标签订单落到真实盘」的串扰。非法值 fail-closed。
+    """
+    if request_environment is None or not str(request_environment).strip():
+        return current_trading_environment()
+    return normalize_trading_environment(request_environment)
 
 
 def current_trading_environment() -> str:
@@ -596,7 +736,7 @@ def client_order_id() -> str:
     return f"OKXQ{uuid.uuid4().hex[:28].upper()}"
 
 
-def build_place_order_payload(order: PlaceSimOrderRequest) -> dict[str, Any]:
+def build_place_order_payload(order: PlaceSimOrderRequest, cl_ord_id: str | None = None) -> dict[str, Any]:
     inst_id = order.instId.strip().upper()
     if not inst_id.endswith("-SWAP"):
         raise HTTPException(status_code=400, detail="手动交易当前只支持 OKX 永续合约 SWAP。")
@@ -623,7 +763,7 @@ def build_place_order_payload(order: PlaceSimOrderRequest) -> dict[str, Any]:
         "side": side,
         "ordType": ord_type,
         "sz": decimal_text(order.sz, "下单数量"),
-        "clOrdId": client_order_id(),
+        "clOrdId": cl_ord_id or client_order_id(),
         "tag": ORDER_TAG,
     }
 
@@ -634,6 +774,201 @@ def build_place_order_payload(order: PlaceSimOrderRequest) -> dict[str, Any]:
     if order.reduceOnly:
         payload["reduceOnly"] = True
 
+    return payload
+
+
+def _positive_decimal(value: Any) -> Decimal | None:
+    """把规格字段解析为正 Decimal，无效或缺失返回 None。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        numeric = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    return numeric if numeric > 0 else None
+
+
+def _decimal_places(value: Decimal) -> int:
+    """返回 Decimal 的小数位数（规范化后）。"""
+    return max(0, -value.normalize().as_tuple().exponent)
+
+
+def resolve_instrument_spec(inst_id: str) -> dict[str, Any] | None:
+    """按合约 ID 从本地合约规格缓存取 lot_sz/tick_sz/ct_val。
+
+    规格表由 /api/instruments 刷新写入；取不到时返回 None，调用方降级放行，
+    绝不因规格缓存为空而阻断下单（保证离线/首次启动仍可交易，由 OKX 兜底）。
+    """
+    try:
+        rows = database.list_instruments(query=inst_id, limit=50)
+    except Exception:
+        return None
+    upper = inst_id.strip().upper()
+    for row in rows:
+        if str(row.get("inst_id") or row.get("instId") or "").upper() == upper:
+            return row
+    return None
+
+
+def validate_order_spec(payload: dict[str, Any], spec: dict[str, Any] | None) -> None:
+    """用合约规格在服务端校验数量/价格精度与最小名义价值。
+
+    - 规格缺失或字段无效：直接放行（降级，交由 OKX 拒单兜底）。
+    - 张数必须为 lot_sz 的整数倍；委托价必须为 tick_sz 的整数倍。
+    - 限价单名义价值 = 张数 × 面值(ctVal) × 委托价，低于下限则拦截。
+    错误均返回可读中文，复用 400。
+    """
+    if not spec:
+        return
+
+    inst_id = str(payload.get("instId") or "")
+    sz_text = str(payload.get("sz") or "").strip()
+    sz = _positive_decimal(sz_text)
+    if sz is None:
+        return  # decimal_text 已在构造阶段拦截，这里只做规格相关校验
+
+    lot_sz = _positive_decimal(spec.get("lot_sz") or spec.get("lotSz"))
+    if lot_sz is not None:
+        # lot_sz 通常为 1（张）；用 Decimal 余数判断整数倍，避免浮点误差。
+        remainder = sz % lot_sz
+        tolerance = lot_sz * Decimal("0.000000001")
+        if remainder > tolerance and (lot_sz - remainder) > tolerance:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{inst_id} 下单数量必须为每张规格 {decimal_display(lot_sz)} 的整数倍，当前为 {sz_text} 张。",
+            )
+
+    px_text = str(payload.get("px") or "").strip()
+    px = _positive_decimal(px_text)
+    tick_sz = _positive_decimal(spec.get("tick_sz") or spec.get("tickSz"))
+    if px is not None and tick_sz is not None:
+        remainder = px % tick_sz
+        tolerance = tick_sz * Decimal("0.000000001")
+        if remainder > tolerance and (tick_sz - remainder) > tolerance:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{inst_id} 委托价必须为最小报价单位 {decimal_display(tick_sz)} 的整数倍，当前为 {px_text}。",
+            )
+
+    ct_val = _positive_decimal(spec.get("ct_val") or spec.get("ctVal"))
+    if px is not None and ct_val is not None:
+        notional = sz * ct_val * px
+        if notional < MIN_ORDER_NOTIONAL_USDT:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{inst_id} 下单名义价值约 {notional.quantize(Decimal('0.01'))} USDT，"
+                    f"低于最小下单金额 {decimal_display(MIN_ORDER_NOTIONAL_USDT)} USDT，请增加张数或调整价格。"
+                ),
+            )
+
+
+def _round_to_tick(price: Decimal, tick: Decimal, direction: str) -> Decimal:
+    """按最小报价单位取整。direction=up 向上（更贵），down 向下（更便宜）。
+
+    用途：让条件单触发价略"不利于成交"，从而晚于本地百分比阈值触发，
+    保证本地轮询是主路径、条件单只兜底，避免双轨竞争。
+    """
+    if tick <= 0:
+        return price
+    rounding = ROUND_CEILING if direction == "up" else ROUND_FLOOR
+    return price.quantize(tick, rounding=rounding)
+
+
+def algo_trigger_prices(
+    avg_px: Decimal | str,
+    pos_side: str,
+    take_profit_pct: Decimal | str,
+    stop_loss_pct: Decimal | str,
+    tick_sz: Decimal | str | None = None,
+) -> dict[str, str]:
+    """把"价格变动百分比"口径换算为 OKX 条件单绝对触发价。
+
+    与本地 `position_profit_pct` 口径一致：按开仓均价的价格变动百分比、**不乘杠杆**。
+    - 做多：止损价 = avg×(1−sl%)，止盈价 = avg×(1+tp%)
+    - 做空：止损价 = avg×(1+sl%)，止盈价 = avg×(1−tp%)
+    取整方向使触发价晚于本地阈值：止损向亏损方向、止盈向盈利方向。
+
+    返回 ``{"tpTriggerPx": ..., "slTriggerPx": ...}``，未设置的腿为空串。
+    avg_px 无效时返回空触发价（交由调用方跳过挂单）。
+    """
+    result = {"tpTriggerPx": "", "slTriggerPx": ""}
+    avg = _positive_decimal(avg_px)
+    if avg is None:
+        return result
+    tp = _positive_decimal(take_profit_pct) or Decimal("0")
+    sl = _positive_decimal(stop_loss_pct) or Decimal("0")
+    if tp <= 0 and sl <= 0:
+        return result
+    tick = _positive_decimal(tick_sz)
+    side = str(pos_side or "").strip().lower()
+
+    if tp > 0:
+        if side == "short":
+            tp_raw = avg * (Decimal("1") - tp / Decimal("100"))  # 做空止盈：价格下跌
+            tp_dir = "down"
+        else:
+            tp_raw = avg * (Decimal("1") + tp / Decimal("100"))  # 做多止盈：价格上涨
+            tp_dir = "up"
+        if tp_raw > 0:
+            result["tpTriggerPx"] = decimal_display(_round_to_tick(tp_raw, tick, tp_dir) if tick else tp_raw)
+
+    if sl > 0:
+        if side == "short":
+            sl_raw = avg * (Decimal("1") + sl / Decimal("100"))  # 做空止损：价格上涨
+            sl_dir = "up"
+        else:
+            sl_raw = avg * (Decimal("1") - sl / Decimal("100"))  # 做多止损：价格下跌
+            sl_dir = "down"
+        if sl_raw > 0:
+            result["slTriggerPx"] = decimal_display(_round_to_tick(sl_raw, tick, sl_dir) if tick else sl_raw)
+
+    return result
+
+
+def build_algo_order_payload(
+    inst_id: str,
+    td_mode: str,
+    pos_side: str,
+    sz: str,
+    trigger: dict[str, str],
+    algo_cl_ord_id: str,
+) -> dict[str, Any] | None:
+    """构造 OKX 算法单（order-algo）payload，用于持仓的止盈止损兜底。
+
+    平仓方向：持有多头(long)则卖出(sell)平仓，持有空头(short)则买入(buy)平仓。
+    - 止盈+止损都有 → OCO（ordType=oco）；只有一条腿 → conditional。
+    - reduceOnly=true 保证只平不开；触发后以市价成交（tpOrdPx/slOrdPx=-1）。
+    - 触发价基准用 ALGO_TRIGGER_PRICE_TYPE（默认 mark，与本地轮询一致）。
+    无任何有效触发价时返回 None，调用方跳过。
+
+    字段语义需在模拟盘实测确认（见 docs/exchange-algo-order-design.md §6）。
+    """
+    tp_px = str(trigger.get("tpTriggerPx") or "").strip()
+    sl_px = str(trigger.get("slTriggerPx") or "").strip()
+    if not tp_px and not sl_px:
+        return None
+    side = "sell" if pos_side == "long" else "buy"
+    payload: dict[str, Any] = {
+        "instId": inst_id.strip().upper(),
+        "tdMode": td_mode.strip().lower() or "cross",
+        "side": side,
+        "sz": decimal_text(sz, "算法单张数"),
+        "reduceOnly": True,
+        "attachAlgoClOrdId": algo_cl_ord_id,
+        "ordType": "oco" if tp_px and sl_px else "conditional",
+    }
+    if pos_side in {"long", "short"}:
+        payload["posSide"] = pos_side
+    if tp_px:
+        payload["tpTriggerPx"] = tp_px
+        payload["tpOrdPx"] = ALGO_ORDER_PX_MARKET
+        payload["tpTriggerPxType"] = ALGO_TRIGGER_PRICE_TYPE
+    if sl_px:
+        payload["slTriggerPx"] = sl_px
+        payload["slOrdPx"] = ALGO_ORDER_PX_MARKET
+        payload["slTriggerPxType"] = ALGO_TRIGGER_PRICE_TYPE
     return payload
 
 
@@ -694,16 +1029,55 @@ def first_response_item(response: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def order_event_origin(environment: str, cl_ord_id: Any) -> str:
+    """按订单号回溯该订单首次落库的来源；查不到时按手动处理。"""
+    target = str(cl_ord_id or "").strip()
+    if not target:
+        return ORDER_ORIGIN_MANUAL
+    try:
+        origin = database.sim_order_event_origin_for(environment, target)
+    except Exception:
+        logger.warning("订单来源回溯失败，按手动处理。", exc_info=True)
+        return ORDER_ORIGIN_MANUAL
+    return origin if origin in ORDER_ORIGINS else ORDER_ORIGIN_MANUAL
+
+
+def backfill_automation_order_origins() -> int:
+    """把「自动化信号实际提交过的订单」回填为 automation 来源。
+
+    历史版本没有来源列，旧库升级后所有订单都落在默认值 manual。这里用
+    信号审计里的 clOrdId 反查：命中即为自动化，未命中保持手动。函数幂等，
+    每次启动跑一次，只更新来源不一致的行。
+    """
+    try:
+        if not hasattr(database, "list_automation_signals"):
+            return 0
+        links = order_pnl.signal_pnl_links(database.list_automation_signals(limit=1000))
+        cl_ord_ids = [key for key in links if key]
+        if not cl_ord_ids:
+            return 0
+        updated = database.mark_sim_order_event_origin(cl_ord_ids, ORDER_ORIGIN_AUTOMATION)
+        if updated:
+            logger.info("已回填 %s 条自动化订单来源。", updated)
+        return updated
+    except Exception:
+        logger.warning("自动化订单来源回填失败，本次跳过。", exc_info=True)
+        return 0
+
+
 def sim_order_event(
     environment: str,
     action: str,
     request_payload: dict[str, Any],
     response_payload: dict[str, Any],
     state: str,
+    close_pnl: dict[str, str] | None = None,
+    origin: str = ORDER_ORIGIN_MANUAL,
 ) -> dict[str, Any]:
     row = first_response_item(response_payload)
     code = str(row.get("sCode") or response_payload.get("code") or "")
     message = str(row.get("sMsg") or response_payload.get("msg") or "")
+    pnl = close_pnl or {}
     event = {
         "environment": environment,
         "ts": now_ms(),
@@ -723,6 +1097,10 @@ def sim_order_event(
         "message": message,
         "request_json": json.dumps(request_payload, ensure_ascii=False, separators=(",", ":")),
         "response_json": json.dumps(response_payload, ensure_ascii=False, separators=(",", ":")),
+        "pnl_usd": pnl.get("pnl_usd") or "",
+        "pnl_pct": pnl.get("pnl_pct") or "",
+        "pnl_basis": pnl.get("pnl_basis") or "",
+        "origin": origin if origin in ORDER_ORIGINS else ORDER_ORIGIN_MANUAL,
     }
     database.insert_sim_order_event(event)
     broadcast_realtime_event(
@@ -755,6 +1133,7 @@ def record_private_order_update(environment: str, order_row: dict[str, Any], raw
     }
     response_payload = {"code": "0", "msg": "", "data": [order_row], "raw": raw_payload}
     row = first_response_item(response_payload)
+    cl_ord_id = row.get("clOrdId") or order_row.get("clOrdId")
     event = {
         "environment": environment,
         "ts": now_ms(),
@@ -767,13 +1146,15 @@ def record_private_order_update(environment: str, order_row: dict[str, Any], raw
         "px": order_row.get("px"),
         "sz": order_row.get("sz"),
         "reduce_only": bool(order_row.get("reduceOnly")),
-        "cl_ord_id": row.get("clOrdId") or order_row.get("clOrdId"),
+        "cl_ord_id": cl_ord_id,
         "ord_id": row.get("ordId") or order_row.get("ordId"),
         "state": state,
         "code": "0",
         "message": str(order_row.get("msg") or order_row.get("sMsg") or ""),
         "request_json": json.dumps(request_payload, ensure_ascii=False, separators=(",", ":")),
         "response_json": json.dumps(response_payload, ensure_ascii=False, separators=(",", ":")),
+        # 推送更新沿用该订单首次落库的来源，避免自动化单在 ws 回执里被记成手动。
+        "origin": order_event_origin(environment, cl_ord_id),
     }
     database.insert_sim_order_event(event)
     invalidate_order_cache(environment, event["inst_id"])
@@ -823,10 +1204,193 @@ def decimal_display_fixed(value: Decimal | str | int | float | None, places: int
     return decimal_display(numeric.quantize(quant))
 
 
+def normalize_automation_inst_ids(values: Any, fallback: str = "") -> list[str]:
+    """规范化合约数组：大写、去重、保序、限量。SWAP 校验由调用方决定。"""
+    if isinstance(values, str):
+        candidates = [part.strip() for part in values.split(",")]
+    elif isinstance(values, (list, tuple, set)):
+        candidates = [str(part).strip() for part in values]
+    else:
+        candidates = []
+    if fallback:
+        candidates.append(str(fallback).strip())
+    normalized: list[str] = []
+    for value in candidates:
+        item = value.upper()
+        if item and item not in normalized:
+            normalized.append(item)
+    return normalized[:AUTOMATION_MAX_INST_IDS]
+
+
+def strategy_inst_ids(strategy: dict[str, Any]) -> list[str]:
+    """读取策略合约列表；旧策略没有 inst_ids 时回退单列 inst_id。"""
+    raw = strategy.get("inst_ids")
+    ids: list[str] = []
+    if isinstance(raw, (list, tuple)):
+        ids = [str(item).upper() for item in raw]
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                ids = [str(item).upper() for item in parsed]
+        except (TypeError, ValueError):
+            ids = []
+    if not ids:
+        ids = [str(strategy.get("inst_id") or "").upper()]
+    normalized = [item for item in dict.fromkeys(ids) if item.endswith("-SWAP")]
+    if not normalized:
+        normalized = [str(strategy.get("inst_id") or "").upper()]
+    return normalized[:AUTOMATION_MAX_INST_IDS]
+
+
+def daily_start_ms(ts_ms: int | None = None) -> int:
+    """UTC+8 自然日 00:00 对应的 epoch 毫秒。"""
+    current = datetime.fromtimestamp(
+        (ts_ms if ts_ms is not None else now_ms()) / 1000, tz=AUTOMATION_DAILY_TIMEZONE
+    )
+    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(start.timestamp() * 1000)
+
+
+def usd_display(value: Decimal) -> str:
+    """额度类金额统一保留两位小数，便于前端扫读与纵向对齐。"""
+    return format(value.quantize(Decimal("0.01")), "f")
+
+
+def account_equity(account_payload: dict[str, Any] | None) -> Decimal | None:
+    """每日额度基准：优先账户总权益，回退可用保证金；读不到返回 None。"""
+    if not isinstance(account_payload, dict):
+        return None
+    summary = account_payload.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    for key in ("totalEq", "eqUsd", "availEq", "availBal"):
+        value = safe_decimal(summary.get(key))
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def automation_order_notional(inst_id: str, sz: Any, price: Any) -> Decimal:
+    """线性合约开仓名义金额 ≈ 张数 × 合约面值 × 信号价格。
+
+    查不到合约面值时返回 0（而不是回退成 1 张 = 1 币），由调用方按
+    「无法估算」fail-closed 拦截，避免把额度高估上百倍。
+    """
+    try:
+        contracts = Decimal(str(sz or "0"))
+        mark = Decimal(str(price or "0"))
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+    if contracts <= 0 or mark <= 0:
+        return Decimal("0")
+    contract_value: Decimal | None = None
+    try:
+        for instrument in database.list_instruments(query=str(inst_id), limit=20):
+            if str(instrument.get("inst_id") or "").upper() != str(inst_id).upper():
+                continue
+            value = safe_decimal(instrument.get("ct_val"))
+            if value is not None and value > 0:
+                contract_value = value
+            break
+    except Exception:
+        return Decimal("0")
+    if contract_value is None:
+        return Decimal("0")
+    return contracts * contract_value * mark
+
+
+def automation_daily_used_notional(strategy_id: int, day_start: int) -> Decimal | None:
+    """统计当日已提交开仓的名义金额；读取失败返回 None，调用方须 fail-closed。"""
+    if not strategy_id:
+        return Decimal("0")
+    try:
+        if hasattr(database, "list_automation_signals_since"):
+            rows = database.list_automation_signals_since(strategy_id, day_start)
+        else:
+            rows = [
+                row
+                for row in database.list_automation_signals(strategy_id, 1000)
+                if int(row.get("ts") or 0) >= day_start
+            ]
+    except Exception as exc:
+        logger.error("策略 %s 当日仓位用量读取失败，拒绝按未知用量开仓: %s", strategy_id, exc)
+        return None
+    total = Decimal("0")
+    for row in rows:
+        if str(row.get("decision") or "") != "submitted":
+            continue
+        if str(row.get("action") or "").strip().lower() not in {"long", "short"}:
+            continue
+        raw = row.get("raw_json")
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except (TypeError, ValueError):
+            payload = {}
+        value = safe_decimal(payload.get("notional")) if isinstance(payload, dict) else None
+        if value is not None and value > 0:
+            total += value
+    return total
+
+
+def automation_eval_map_key(strategy_id: int) -> str:
+    return f"{AUTOMATION_EVAL_MAP_PREFIX}{int(strategy_id or 0)}"
+
+
+def automation_eval_map(strategy_id: int) -> dict[str, int]:
+    """按合约记录最近评估过的 K 线时间戳，避免多合约共用策略级 last_eval_ts。"""
+    if not strategy_id or not hasattr(database, "get_app_setting"):
+        return {}
+    try:
+        raw = database.get_app_setting(automation_eval_map_key(strategy_id))
+        payload = json.loads(raw) if raw else {}
+        if isinstance(payload, dict):
+            result: dict[str, int] = {}
+            for key, value in payload.items():
+                try:
+                    result[str(key).upper()] = int(value)
+                except (TypeError, ValueError):
+                    continue
+            return result
+    except Exception as exc:
+        logger.warning("策略 %s K线去重状态读取失败: %s", strategy_id, exc)
+    return {}
+
+
+def automation_mark_eval(strategy_id: int, inst_id: str, candle_ts: int, eval_map: dict[str, int]) -> None:
+    """单合约仍写 last_eval_ts 以兼容旧逻辑，多合约额外按合约持久化。"""
+    now = now_ms()
+    if hasattr(database, "set_automation_strategy_last_eval"):
+        try:
+            database.set_automation_strategy_last_eval(strategy_id, int(candle_ts), now)
+        except Exception as exc:
+            logger.warning("策略 %s last_eval_ts 写入失败: %s", strategy_id, exc)
+    if strategy_id and hasattr(database, "set_app_setting"):
+        eval_map[str(inst_id).upper()] = int(candle_ts)
+        try:
+            database.set_app_setting(
+                automation_eval_map_key(strategy_id),
+                json.dumps(eval_map, separators=(",", ":")),
+                now,
+            )
+        except Exception as exc:
+            logger.warning("策略 %s K线去重状态写入失败: %s", strategy_id, exc)
+
+
 def normalize_automation_strategy(payload: AutomationStrategyRequest, existing: dict[str, Any] | None = None) -> dict[str, Any]:
-    inst_id = payload.instId.strip().upper()
-    if not inst_id.endswith("-SWAP"):
-        raise HTTPException(status_code=400, detail="自动交易第一版只支持 OKX 永续合约 SWAP。")
+    inst_ids = normalize_automation_inst_ids(getattr(payload, "instIds", None), payload.instId)
+    if not inst_ids:
+        raise HTTPException(status_code=400, detail="请至少选择一个永续合约。")
+    invalid_instruments = [item for item in inst_ids if not item.endswith("-SWAP")]
+    if invalid_instruments:
+        raise HTTPException(
+            status_code=400,
+            detail=f"自动交易只支持 OKX 永续合约 SWAP：{', '.join(invalid_instruments)}",
+        )
+    inst_id = inst_ids[0]
+    daily_position_pct = automation_percent_text(getattr(payload, "dailyPositionPct", "0"), "每日仓位百分比")
+    if Decimal(daily_position_pct) > Decimal("100"):
+        raise HTTPException(status_code=400, detail="每日仓位百分比不能超过 100%。")
 
     bar = payload.bar.strip()
     if bar not in SUPPORTED_BARS:
@@ -867,6 +1431,8 @@ def normalize_automation_strategy(payload: AutomationStrategyRequest, existing: 
         "archived_at": existing.get("archived_at") if existing else None,
         "archived_reason": str(existing.get("archived_reason") or "") if existing else "",
         "inst_id": inst_id,
+        "inst_ids": json.dumps(inst_ids, ensure_ascii=False, separators=(",", ":")),
+        "daily_position_pct": daily_position_pct,
         "bar": bar,
         "template": template,
         "execution_mode": execution_mode,
@@ -890,6 +1456,8 @@ def strategy_response(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     result["enabled"] = bool(result.get("enabled"))
     result["archived"] = bool(result.get("archived"))
+    result["instIds"] = strategy_inst_ids(result)
+    result["dailyPositionPct"] = str(result.get("daily_position_pct") or "0")
     return result
 
 
@@ -898,12 +1466,18 @@ def ensure_single_enabled_strategy(strategy: dict[str, Any], strategy_id: int = 
         return
     if bool(strategy.get("archived")):
         raise HTTPException(status_code=400, detail="已归档策略请先恢复后再启动。")
-    inst_id = str(strategy.get("inst_id") or "").upper()
+    selected = set(strategy_inst_ids(strategy))
     for row in list_automation_strategies_safe(include_archived=True):
         if int(row.get("id") or 0) == strategy_id:
             continue
-        if bool(row.get("enabled")) and not bool(row.get("archived")) and str(row.get("inst_id") or "").upper() == inst_id:
-            raise HTTPException(status_code=400, detail=f"{inst_id} 已有启用中的自动策略，请先暂停另一条策略。")
+        if not bool(row.get("enabled")) or bool(row.get("archived")):
+            continue
+        overlap = sorted(selected & set(strategy_inst_ids(row)))
+        if overlap:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{', '.join(overlap)} 已有启用中的自动策略，请先暂停另一条策略。",
+            )
 
 
 def ensure_strategy_enable_preconditions(strategy: dict[str, Any], strategy_id: int = 0) -> None:
@@ -945,20 +1519,33 @@ def default_automation_global_state() -> dict[str, Any]:
 
 
 def automation_global_state() -> dict[str, Any]:
+    """读取全局安全状态。
+
+    stateAvailable 是进程内标记，不写入数据库。任何读取或解析失败都按
+    全局暂停处理（fail-closed），避免无人值守时安全开关静默失效。
+    """
     state = default_automation_global_state()
+    state["stateAvailable"] = True
     if not hasattr(database, "get_app_setting"):
         return state
     try:
         raw = database.get_app_setting(AUTOMATION_GLOBAL_STATE_KEY)
-    except Exception:
-        return state
-    if raw:
-        try:
+        if raw:
             payload = json.loads(raw)
-        except json.JSONDecodeError:
-            payload = {}
-        if isinstance(payload, dict):
+            if not isinstance(payload, dict):
+                raise ValueError("自动化全局安全状态格式异常")
             state.update(payload)
+    except Exception as exc:
+        logger.error("自动化全局安全状态读取失败，按全局暂停处理: %s", exc)
+        state.update(
+            {
+                "stateAvailable": False,
+                "globalPaused": True,
+                "pauseReason": "自动化全局安全状态读取失败，已按全局暂停处理，请检查数据库后手动恢复。",
+            }
+        )
+        return state
+    state["stateAvailable"] = True
     state["globalPaused"] = bool(state.get("globalPaused"))
     state["pauseReason"] = str(state.get("pauseReason") or "")
     state["pauseStartedAt"] = int(state.get("pauseStartedAt") or 0)
@@ -972,8 +1559,8 @@ def automation_global_state() -> dict[str, Any]:
 
 
 def persist_automation_global_state(state: dict[str, Any]) -> dict[str, Any]:
-    payload = default_automation_global_state()
-    payload.update(state)
+    defaults = default_automation_global_state()
+    payload = {**defaults, **{key: value for key, value in state.items() if key in defaults}}
     payload["globalPaused"] = bool(payload.get("globalPaused"))
     payload["pauseReason"] = str(payload.get("pauseReason") or "")
     payload["pauseStartedAt"] = int(payload.get("pauseStartedAt") or 0)
@@ -999,24 +1586,7 @@ def persist_automation_global_state(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def automation_global_block_check(strategy: dict[str, Any], signal: dict[str, Any]) -> dict[str, Any] | None:
-    state = automation_global_state()
-    if state.get("globalPaused"):
-        return {
-            "key": "global_pause",
-            "label": "全局暂停",
-            "status": "block",
-            "message": state.get("pauseReason") or "自动交易当前处于全局暂停状态，已停止自动执行。",
-            "value": "已暂停",
-        }
-    if state.get("circuitBreakerActive"):
-        return {
-            "key": "circuit_breaker",
-            "label": "熔断状态",
-            "status": "block",
-            "message": state.get("circuitReason") or "自动交易已触发熔断，需人工恢复后才会继续执行。",
-            "value": "已熔断",
-        }
-    return None
+    return global_block_from_state(automation_global_state())
 
 
 def list_automation_strategies_safe(include_archived: bool = False) -> list[dict[str, Any]]:
@@ -1135,6 +1705,7 @@ def create_automation_alert(
 
 
 def trigger_automation_circuit_breaker(reason: str, strategy_id: int | None = None, signal_id: int | None = None) -> dict[str, Any]:
+    logger.error("自动化交易触发熔断 strategy=%s signal=%s reason=%s", strategy_id, signal_id, reason)
     now = now_ms()
     updated = persist_automation_global_state(
         {
@@ -1248,10 +1819,13 @@ def automation_status_payload() -> dict[str, Any]:
         "circuitReason": global_state.get("circuitReason") or "",
         "circuitTriggeredAt": global_state.get("circuitTriggeredAt") or 0,
         "globalStateUpdatedAt": global_state.get("updatedAt") or 0,
+        "globalStateAvailable": bool(global_state.get("stateAvailable", True)),
         "alertCount": count_automation_alerts_safe(active_only=True),
         "criticalAlertCount": count_automation_alerts_safe(active_only=True, severity="critical"),
         "supportedModes": ["signal_only", "simulated_auto"],
         "supportedTemplates": ["ma_cross", "llm_direct"],
+        "maxInstrumentsPerStrategy": AUTOMATION_MAX_INST_IDS,
+        "dailyTimezone": "UTC+8",
         "llmMinConfidence": AUTOMATION_LLM_MIN_CONFIDENCE,
         "llmLookbackCandles": AUTOMATION_LLM_LOOKBACK_CANDLES,
         "llmPromptCandles": AUTOMATION_LLM_PROMPT_CANDLES,
@@ -1268,7 +1842,7 @@ def default_llm_config() -> dict[str, Any]:
         "temperature": 0.2,
         "maxTokens": 800,
         "timeoutSeconds": LLM_DEFAULT_TIMEOUT_SECONDS,
-        "mode": "direct_signal",
+        "mode": LLM_FIXED_MODE,
         "systemPrompt": DEFAULT_LLM_SYSTEM_PROMPT,
         "updatedAt": 0,
     }
@@ -1316,8 +1890,8 @@ def stored_llm_config() -> dict[str, Any]:
 
     provider = str(config.get("provider") or "openai_compatible").strip().lower()
     config["provider"] = provider if provider in LLM_PROVIDERS else "openai_compatible"
-    mode = str(config.get("mode") or "direct_signal").strip().lower()
-    config["mode"] = mode if mode in LLM_MODES else "direct_signal"
+    # 分析模式已下线：统一固定为 direct_signal，兼容历史 explain_only / review 数据
+    config["mode"] = LLM_FIXED_MODE
     config["enabled"] = bool(config.get("enabled"))
     config["baseUrl"] = str(config.get("baseUrl") or "").strip()
     config["apiKey"] = str(config.get("apiKey") or "")
@@ -1326,10 +1900,9 @@ def stored_llm_config() -> dict[str, Any]:
     config["maxTokens"] = coerce_int(config.get("maxTokens"), 800, 128, 4000)
     config["timeoutSeconds"] = coerce_int(config.get("timeoutSeconds"), LLM_DEFAULT_TIMEOUT_SECONDS, 3, 60)
     system_prompt = str(config.get("systemPrompt") or DEFAULT_LLM_SYSTEM_PROMPT).strip() or DEFAULT_LLM_SYSTEM_PROMPT
-    if system_prompt == LEGACY_LLM_SYSTEM_PROMPT:
+    # 命中历史默认文案（含更早两版）时自动迁移到新版；用户自定义文案保持不动。
+    if system_prompt in {LEGACY_LLM_SYSTEM_PROMPT, PREVIOUS_LLM_SYSTEM_PROMPT, PREVIOUS_V2_LLM_SYSTEM_PROMPT}:
         system_prompt = DEFAULT_LLM_SYSTEM_PROMPT
-        if config["mode"] == "explain_only":
-            config["mode"] = "direct_signal"
     config["systemPrompt"] = system_prompt
     config["updatedAt"] = coerce_int(config.get("updatedAt"), 0, 0, 9_999_999_999_999)
     return config
@@ -1347,7 +1920,7 @@ def sanitize_llm_config(config: dict[str, Any]) -> dict[str, Any]:
         "maxTokens": config.get("maxTokens"),
         "timeoutSeconds": config.get("timeoutSeconds"),
         "effectiveTimeoutSeconds": llm_request_timeout_seconds(config),
-        "mode": config.get("mode") or "explain_only",
+        "mode": LLM_FIXED_MODE,
         "systemPrompt": config.get("systemPrompt") or DEFAULT_LLM_SYSTEM_PROMPT,
         "updatedAt": config.get("updatedAt") or 0,
     }
@@ -1357,10 +1930,7 @@ def normalize_llm_config(payload: LlmConfigRequest, existing: dict[str, Any] | N
     provider = payload.provider.strip().lower()
     if provider not in LLM_PROVIDERS:
         raise HTTPException(status_code=400, detail="LLM 服务商类型不受支持。")
-    mode = payload.mode.strip().lower()
-    if mode not in LLM_MODES:
-        raise HTTPException(status_code=400, detail="LLM 分析模式不受支持。")
-
+    # 分析模式已下线：忽略请求中的 mode，统一固定为 direct_signal（兼容老客户端）
     existing = existing or default_llm_config()
     api_key = "" if payload.clearApiKey else str(existing.get("apiKey") or "")
     if payload.apiKey is not None and payload.apiKey.strip():
@@ -1385,7 +1955,7 @@ def normalize_llm_config(payload: LlmConfigRequest, existing: dict[str, Any] | N
         "temperature": payload.temperature,
         "maxTokens": payload.maxTokens,
         "timeoutSeconds": payload.timeoutSeconds,
-        "mode": mode,
+        "mode": LLM_FIXED_MODE,
         "systemPrompt": payload.systemPrompt.strip() or DEFAULT_LLM_SYSTEM_PROMPT,
         "updatedAt": now_ms(),
     }
@@ -1401,7 +1971,23 @@ def llm_completion_url(base_url: str) -> str:
 def is_deepseek_llm_config(config: dict[str, Any]) -> bool:
     base_url = str(config.get("baseUrl") or "").strip().lower()
     model = str(config.get("model") or "").strip().lower()
-    return "api.deepseek.com" in base_url or model.startswith("deepseek-")
+    if "api.deepseek.com" in base_url:
+        return True
+    # deepseek-ai/... 属于硅基流动等第三方托管，不套用官方接口的 thinking / response_format 参数
+    return model.startswith("deepseek-") and not model.startswith("deepseek-ai/")
+
+
+# 新世代推理模型会直接拒绝 temperature / top_p（HTTP 400），请求体必须省略
+LLM_NO_TEMPERATURE_MODEL_PREFIXES = (
+    "gpt-5", "gpt-6", "o1", "o3", "o4",
+    "claude-opus-5", "claude-sonnet-5", "claude-haiku-5", "claude-fable-5",
+    "gemini-4",
+)
+
+
+def llm_temperature_supported(model: str) -> bool:
+    normalized = str(model or "").strip().lower().rsplit("/", 1)[-1]
+    return not normalized.startswith(LLM_NO_TEMPERATURE_MODEL_PREFIXES)
 
 
 def llm_request_timeout_seconds(config: dict[str, Any]) -> int:
@@ -1558,9 +2144,10 @@ def llm_chat_completion(
     body = {
         "model": config["model"],
         "messages": messages,
-        "temperature": config["temperature"],
         "max_tokens": config["maxTokens"],
     }
+    if llm_temperature_supported(str(config["model"])):
+        body["temperature"] = config["temperature"]
     if is_deepseek_llm_config(config):
         body["response_format"] = {"type": "json_object"}
         body["thinking"] = {"type": "disabled"}
@@ -1916,6 +2503,9 @@ def radar_market_contract_item(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "instId": str(result.get("instId") or ""),
         "score": coerce_int(scores.get("opportunity"), 0, 0, 100),
+        "last": str(result.get("last") or ""),
+        "high24h": str(result.get("high24h") or ""),
+        "low24h": str(result.get("low24h") or ""),
         "tradabilityStatus": str(result.get("tradabilityStatus") or ""),
         "riskLevel": str(result.get("riskLevel") or ""),
         "volatilityLevel": str(result.get("volatilityLevel") or ""),
@@ -1938,6 +2528,8 @@ def radar_market_contract_item(result: dict[str, Any]) -> dict[str, Any]:
             "drivers": [str(item) for item in (entry_assessment.get("drivers") or [])[:4]],
         },
         "tags": [str(item) for item in (result.get("tags") or [])[:5]],
+        "fundingRate": decimal_display_fixed(result.get("fundingRate"), 6) if result.get("fundingRate") is not None else "",
+        "openInterestUsd": decimal_display_fixed(result.get("openInterestUsd"), 0) if result.get("openInterestUsd") is not None else "",
         "warnings": [str(item) for item in (result.get("warnings") or [])[:3]],
     }
 
@@ -1945,6 +2537,36 @@ def radar_market_contract_item(result: dict[str, Any]) -> dict[str, Any]:
 def build_radar_market_summary(radar_payload: dict[str, Any], scan_results: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     rows = [item for item in (scan_results if scan_results is not None else radar_payload.get("data") or []) if isinstance(item, dict)]
     summary = radar_payload.get("summary") if isinstance(radar_payload.get("summary"), dict) else {}
+
+    funding_rates = [
+        value
+        for value in (safe_decimal(item.get("fundingRate")) for item in rows)
+        if value is not None
+    ]
+    oi_values = [
+        value
+        for value in (safe_decimal(item.get("openInterestUsd")) for item in rows)
+        if value is not None
+    ]
+    positive_funding = sum(1 for value in funding_rates if value > Decimal("0"))
+    negative_funding = sum(1 for value in funding_rates if value < Decimal("0"))
+    neutral_funding = len(funding_rates) - positive_funding - negative_funding
+    avg_funding = (sum(funding_rates, Decimal("0")) / Decimal(len(funding_rates))) if funding_rates else None
+    market_sentiment = {
+        "funding": {
+            "sampled": len(funding_rates),
+            "positive": positive_funding,
+            "negative": negative_funding,
+            "neutral": neutral_funding,
+            "avgFundingRate": decimal_display_fixed(avg_funding, 6) if avg_funding is not None else "",
+            "avgFundingRatePct": decimal_display_fixed(avg_funding * 100, 4) if avg_funding is not None else "",
+        },
+        "openInterest": {
+            "sampled": len(oi_values),
+            "maxOiUsd": decimal_display_fixed(max(oi_values), 0) if oi_values else "",
+            "medianOiUsd": decimal_display_fixed(radar_decimal_median(oi_values), 0) if oi_values else "",
+        },
+    }
     scan_ts = coerce_int(radar_payload.get("ts"), now_ms(), 0, 9_999_999_999_999)
 
     changes = [value for value in (radar_result_decimal(item, "change24hPct") for item in rows) if value is not None]
@@ -2047,7 +2669,81 @@ def build_radar_market_summary(radar_payload: dict[str, Any], scan_results: list
         "topTurnover": [radar_market_contract_item(item) for item in top_turnover_rows],
         "topVolatility": [radar_market_contract_item(item) for item in top_volatility_rows],
         "volumeSpikes": [radar_market_contract_item(item) for item in volume_spike_rows],
+        "sentiment": market_sentiment,
     }
+
+
+# Best-effort sentiment enrichment must never push the analysis request past the
+# frontend proxy timeout. These bounds keep the synchronous fetch bounded.
+RADAR_SENTIMENT_BUDGET_SECONDS = 10
+RADAR_SENTIMENT_FUNDING_TTL_MS = 120_000
+RADAR_OI_BULK_TTL_MS = 60_000
+_radar_sentiment_funding_cache: dict[str, tuple[int, Any]] = {}
+_radar_sentiment_oi_bulk_cache: tuple[int, dict[str, str]] | None = None
+
+
+def _cached_open_interest_bulk() -> dict[str, str]:
+    global _radar_sentiment_oi_bulk_cache
+    now = now_ms()
+    cached = _radar_sentiment_oi_bulk_cache
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    bulk = client.get_open_interest_bulk()
+    _radar_sentiment_oi_bulk_cache = (now + RADAR_OI_BULK_TTL_MS, bulk)
+    return bulk
+
+
+def _cached_funding_rate(inst_id: str, deadline: float) -> Any:
+    global _radar_sentiment_funding_cache
+    now = now_ms()
+    cached = _radar_sentiment_funding_cache.get(inst_id)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    if time.monotonic() >= deadline:
+        return None
+    try:
+        raw = client.get_funding_rate(inst_id)
+        rate = safe_decimal(raw.get("fundingRate")) if isinstance(raw, dict) else None
+    except Exception:
+        rate = None
+    _radar_sentiment_funding_cache[inst_id] = (now + RADAR_SENTIMENT_FUNDING_TTL_MS, rate)
+    return rate
+
+
+def enrich_radar_sentiment(radar_payload: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort enrichment of top radar contracts with funding rate and open
+    interest so the AI analysis has sentiment context.
+
+    All network access is bounded: open interest is fetched in a single bulk call,
+    funding rates are read through a short-timeout, server-side cache, and the
+    whole step is capped by a global time budget. A slow or flaky OKX cannot push
+    the analysis request past the frontend proxy timeout; the summary simply omits
+    sentiment data when the budget is exhausted or calls fail."""
+    rows = [item for item in (radar_payload.get("data") or []) if isinstance(item, dict)]
+    targets = rows[:RADAR_SENTIMENT_ENRICH_LIMIT]
+    if not targets:
+        return build_radar_market_summary(radar_payload, rows)
+
+    deadline = time.monotonic() + RADAR_SENTIMENT_BUDGET_SECONDS
+    oi_map = _cached_open_interest_bulk()
+
+    def fetch_one(inst_id: str) -> tuple[str, Any, Any]:
+        rate = _cached_funding_rate(inst_id, deadline)
+        oi = safe_decimal(oi_map.get(inst_id))
+        return inst_id, rate, oi
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(8, len(targets))) as executor:
+            for inst_id, rate, oi in executor.map(fetch_one, [str(t.get("instId") or "") for t in targets]):
+                for row in targets:
+                    if str(row.get("instId") or "") == inst_id:
+                        row["fundingRate"] = rate
+                        row["openInterestUsd"] = oi
+                        break
+    except Exception:
+        pass
+
+    return build_radar_market_summary(radar_payload, rows)
 
 
 def ticker_decimal(ticker: dict[str, Any] | None, keys: list[str]) -> Decimal | None:
@@ -2605,6 +3301,8 @@ def score_radar_contract(
         "settleCcy": settle_ccy,
         "state": state or "",
         "last": decimal_display(last) if last is not None else "",
+        "high24h": decimal_display(high24h) if high24h is not None else "",
+        "low24h": decimal_display(low24h) if low24h is not None else "",
         "change24hPct": change24h_pct,
         "range24hPct": decimal_display(range24h_pct),
         "volume24h": decimal_display(volume24h) if volume24h is not None else "",
@@ -2871,6 +3569,24 @@ def load_radar_snapshot(cache_key: str = "") -> dict[str, Any] | None:
     return {"cacheKey": stored_key, "ts": ts, "payload": snapshot["payload"]}
 
 
+def radar_normalize_cached_candle(row: dict[str, Any]) -> dict[str, Any]:
+    """Align database candle rows with the OKX client's camelCase shape.
+
+    ``latest_candles`` returns snake_case columns (volume_quote / volume_ccy),
+    while every downstream radar consumer reads ``volumeQuote``. Without this
+    alias a fully populated cache looks incomplete, so each scan re-fetches all
+    K-lines from OKX (slow / 504 when the upstream is unreachable) and the
+    hourly quote turnover falls back to "pending".
+    """
+    if "volumeQuote" in row or "volume_quote" not in row:
+        return row
+    return {
+        **row,
+        "volumeQuote": row.get("volume_quote") or "",
+        "volumeCcy": row.get("volume_ccy") or "",
+    }
+
+
 def radar_candles(
     inst_id: str,
     bar: str,
@@ -2878,7 +3594,7 @@ def radar_candles(
     *,
     require_hourly_quote_turnover: bool = True,
 ) -> list[dict[str, Any]]:
-    cached = database.latest_candles(inst_id, bar, limit)
+    cached = [radar_normalize_cached_candle(item) for item in database.latest_candles(inst_id, bar, limit)]
     completed = [item for item in cached if str(item.get("confirm", "1")) == "1"]
     has_hourly_quote_turnover = len(completed[-RADAR_ONE_HOUR_CANDLE_COUNT:]) == RADAR_ONE_HOUR_CANDLE_COUNT and all(
         (safe_decimal(item.get("volumeQuote")) or Decimal("0")) > 0
@@ -2906,12 +3622,12 @@ def radar_candles(
 
 
 def radar_instruments() -> list[dict[str, Any]]:
-    rows = database.list_instruments(query="", limit=500)
+    rows = database.list_instruments(query="", limit=2000)
     if rows:
         return rows
     fresh = client.get_instruments()
     database.upsert_instruments(fresh, now_ms())
-    return database.list_instruments(query="", limit=500)
+    return database.list_instruments(query="", limit=2000)
 
 
 def radar_metric_explanation(result: dict[str, Any]) -> dict[str, list[str]]:
@@ -2948,6 +3664,11 @@ def explain_radar_results_with_llm(results: list[dict[str, Any]]) -> tuple[list[
                 "volumeSpike": item.get("metrics", {}).get("volumeSpike"),
             },
             "currentReasons": item.get("reasons", []),
+            "fundingRate": item.get("fundingRate"),
+            "openInterestUsd": item.get("openInterestUsd"),
+            "last": item.get("last"),
+            "high24h": item.get("high24h"),
+            "low24h": item.get("low24h"),
             "currentWarnings": item.get("warnings", []),
         }
         for item in explain_rows
@@ -2959,8 +3680,12 @@ def explain_radar_results_with_llm(results: list[dict[str, Any]]) -> tuple[list[
                 {
                     "role": "system",
                     "content": (
-                        "你是谨慎的合约雷达解释助手。只基于输入指标解释适合关注或风险点。"
-                        "不要输出做多、做空、保证盈利、必须交易等措辞。只返回 JSON。"
+                        "你是谨慎的合约雷达解释助手。只基于输入指标，对每个合约给出："
+                        "1) 值得关注的核心驱动(reasons)；2) 主要风险或为何被低分/排除(warnings)；"
+                        "3) 研究方向倾向 direction（仅取 long/short/neutral 之一，基于成交量、浮动、资金费率方向与价格相对 24h 高低的位置推断，仅供参考）；"
+                        "4) 参考入手价位区间 entryZone（必须基于输入中的 last/high24h/low24h 真实价格推导，不得编造数字）。"
+                        "若 riskLevel 为高或机会分偏低，必须在 warnings 中明确说明不推荐原因。"
+                        "所有方向判断与价位仅为研究参考，不构成投资建议，不得保证盈利或要求交易。只返回 JSON。"
                     ),
                 },
                 {
@@ -2968,8 +3693,13 @@ def explain_radar_results_with_llm(results: list[dict[str, Any]]) -> tuple[list[
                     "content": json.dumps(
                         {
                             "instruction": (
-                                "为每个合约生成简短 reasons 和 warnings。"
-                                "格式：{\"items\":[{\"instId\":\"...\",\"reasons\":[\"...\"],\"warnings\":[\"...\"]}]}"
+                                "为每个合约生成简短 reasons、warnings、direction 和 entryZone。"
+                                "reasons 说明为何值得关注（成交量、浮动、资金费率偏热等驱动）；"
+                                "warnings 说明风险，若 riskLevel 为高或分数偏低必须解释为何不推荐或已被排除。"
+                                "direction 仅取 long/short/neutral 之一，结合资金费率方向、价格相对 24h 高低的位置与浮动判断。"
+                                "entryZone 必须基于输入的 last/high24h/low24h 给一个具体价位区间（如“回踩 X~Y 分批”），不得编造。"
+                                "若有 fundingRate/openInterestUsd 请结合多空博弈与持仓规模判断。"
+                                "格式：{\"items\":[{\"instId\":\"...\",\"reasons\":[\"...\"],\"warnings\":[\"...\"],\"direction\":\"long|short|neutral\",\"entryZone\":\"...\"}]}"
                             ),
                             "contracts": prompt_payload,
                         },
@@ -2996,6 +3726,8 @@ def explain_radar_results_with_llm(results: list[dict[str, Any]]) -> tuple[list[
                     updated["reasons"] = reasons[:4]
                 if warnings:
                     updated["warnings"] = list(dict.fromkeys((updated.get("warnings") or []) + warnings))[:6]
+                updated["direction"] = radar_clean_direction(llm_item.get("direction"))
+                updated["entryZone"] = radar_validate_entry_zone(llm_item.get("entryZone"), result)
                 updated["explainedBy"] = "llm"
             next_results.append(updated)
         return next_results, ""
@@ -3097,6 +3829,8 @@ def build_radar_scan(request: RadarScanRequest) -> dict[str, Any]:
         explanation = radar_metric_explanation(result)
         result["reasons"] = explanation["reasons"]
         result["warnings"] = explanation["warnings"]
+        result["direction"] = radar_rule_direction(result)
+        result["entryZone"] = radar_ground_entry_zone(result, result["direction"])
         if radar_result_matches_filters(result, request):
             results.append(result)
 
@@ -6813,6 +7547,9 @@ def load_radar_analysis_snapshot(cache_key: str) -> dict[str, Any] | None:
 
 def radar_analysis_payload_with_cache_meta(payload: dict[str, Any], source: str, ts: int) -> dict[str, Any]:
     result = dict(payload)
+    # Keep the real origin so the UI can still tell an LLM result from a rule-based one.
+    if source == "radar-analysis-cache":
+        result["originSource"] = str(result.get("source") or "")
     result["source"] = source
     result["cacheAgeMs"] = max(0, now_ms() - ts)
     return result
@@ -6838,11 +7575,87 @@ def radar_string_list(value: Any, limit: int = 5) -> list[str]:
     return [radar_clean_text(item) for item in value if radar_clean_text(item)][:limit]
 
 
+ALLOWED_DIRECTIONS = {"long", "short", "neutral"}
+
+
+def radar_clean_direction(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in ALLOWED_DIRECTIONS:
+        return text
+    if text in ("多", "做多", "买多", "bull", "bullish"):
+        return "long"
+    if text in ("空", "做空", "买空", "bear", "bearish"):
+        return "short"
+    return "neutral"
+
+
+def radar_rule_direction(result: dict[str, Any]) -> str:
+    """Deterministic per-contract direction bias used as a baseline when the LLM
+    explanation path is disabled or unavailable. High-risk contracts stay neutral
+    to avoid implying a trade bias on fragile setups; otherwise the 24h change
+    drives a long/short lean with a conservative threshold."""
+    risk = str(result.get("riskLevel") or "")
+    if risk == "high":
+        return "neutral"
+    change = safe_decimal(result.get("change24hPct"))
+    if change is None:
+        return "neutral"
+    if change >= Decimal("1.5"):
+        return "long"
+    if change <= Decimal("-1.5"):
+        return "short"
+    return "neutral"
+
+
+def radar_item_prices_by_id(market_summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for key in ("leaders", "topTurnover", "topVolatility", "volumeSpikes"):
+        for item in market_summary.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            inst_id = str(item.get("instId") or "").upper()
+            if inst_id and inst_id not in out:
+                out[inst_id] = item
+    return out
+
+
+def radar_ground_entry_zone(item: dict[str, Any], direction: str) -> str:
+    last = safe_decimal(item.get("last"))
+    high = safe_decimal(item.get("high24h"))
+    low = safe_decimal(item.get("low24h"))
+    if direction == "long" and last is not None and low is not None:
+        return f"回踩 {decimal_display(low)}~{decimal_display(last)} 区间分批"
+    if direction == "short" and last is not None and high is not None:
+        return f"反弹 {decimal_display(last)}~{decimal_display(high)} 区间分批"
+    if last is not None:
+        lo = low if low is not None else last
+        hi = high if high is not None else last
+        return f"参考 {decimal_display(lo)}~{decimal_display(hi)} 区间"
+    return "价格数据不足，请参考盘面实时价位"
+
+
+def radar_validate_entry_zone(text: Any, item: dict[str, Any]) -> str:
+    cleaned = radar_clean_text(text, "")
+    if not cleaned or len(cleaned) > 60:
+        return radar_ground_entry_zone(item, "neutral")
+    numbers = [num for num in (safe_decimal(n) for n in re.findall(r"\d+(?:\.\d+)?", cleaned)) if num is not None]
+    low = safe_decimal(item.get("low24h"))
+    high = safe_decimal(item.get("high24h"))
+    if numbers and low is not None and high is not None and low > 0:
+        bound_low = low * Decimal("0.85")
+        bound_high = high * Decimal("1.15")
+        if all(bound_low <= num <= bound_high for num in numbers):
+            return cleaned
+    return radar_ground_entry_zone(item, "neutral")
+
+
 def fallback_radar_market_analysis(market_summary: dict[str, Any], warning: str = "") -> dict[str, Any]:
     breadth = market_summary.get("breadth") if isinstance(market_summary.get("breadth"), dict) else {}
     liquidity = market_summary.get("liquidity") if isinstance(market_summary.get("liquidity"), dict) else {}
     volatility = market_summary.get("volatility") if isinstance(market_summary.get("volatility"), dict) else {}
     risk = market_summary.get("risk") if isinstance(market_summary.get("risk"), dict) else {}
+    sentiment = market_summary.get("sentiment") if isinstance(market_summary.get("sentiment"), dict) else {}
+    funding = sentiment.get("funding") if isinstance(sentiment.get("funding"), dict) else {}
     scan = market_summary.get("scan") if isinstance(market_summary.get("scan"), dict) else {}
     rising = coerce_int(breadth.get("rising"), 0, 0, 10_000)
     falling = coerce_int(breadth.get("falling"), 0, 0, 10_000)
@@ -6863,12 +7676,52 @@ def fallback_radar_market_analysis(market_summary: dict[str, Any], warning: str 
         regime = "range"
         regime_text = "大盘活跃度偏均衡，适合等待放量或振幅扩大的合约。"
 
+    if regime == "risk-off":
+        market_bias = "neutral"
+    elif rising > falling * 1.4:
+        market_bias = "long"
+    elif falling > rising * 1.4:
+        market_bias = "short"
+    else:
+        market_bias = "neutral"
+
+    def _watch_reason(item: dict[str, Any]) -> str:
+        base = str(
+            (item.get("entryAssessment") or {}).get("summary")
+            or f"机会分 {item.get('score', 0)}，{item.get('volatilityLevel') or 'unknown'} 波动，{item.get('tradabilityStatus') or 'unknown'}。"
+        )
+        fr = item.get("fundingRate")
+        if fr:
+            try:
+                fr_pct = safe_decimal(fr) * 100
+                side = "多头" if fr_pct > 0 else "空头"
+                base = f"{base} 资金费率 {decimal_display_fixed(fr_pct, 4)}%，多空博弈偏{side}。"
+            except Exception:
+                pass
+        oi = item.get("openInterestUsd")
+        if oi:
+            base = f"{base} 持仓名义市值 {oi}。"
+        return base
+
+    def _watch_direction(item: dict[str, Any]) -> str:
+        if regime == "risk-off":
+            return "neutral"
+        chg = safe_decimal(item.get("change24hPct"))
+        if chg is not None:
+            if chg > 0:
+                return "long"
+            if chg < 0:
+                return "short"
+        return "neutral"
+
     leaders = [item for item in market_summary.get("leaders") or [] if isinstance(item, dict)]
     watchlist = [
         {
             "instId": str(item.get("instId") or ""),
-            "reason": str((item.get("entryAssessment") or {}).get("summary") or f"机会分 {item.get('score', 0)}，{item.get('volatilityLevel') or 'unknown'} 波动，{item.get('tradabilityStatus') or 'unknown'}。"),
+            "reason": _watch_reason(item),
             "riskNote": "仍需检查盘口深度、止损空间和是否出现异常单边波动。",
+            "direction": _watch_direction(item),
+            "entryZone": radar_ground_entry_zone(item, _watch_direction(item)),
         }
         for item in leaders[:3]
         if item.get("instId")
@@ -6876,19 +7729,29 @@ def fallback_radar_market_analysis(market_summary: dict[str, Any], warning: str 
     warnings = [warning] if warning else []
     if not warning:
         warnings.append("LLM 未参与，本分析由雷达指标自动生成。")
+    highlights = [
+        f"上涨 {rising} 个，下跌 {falling} 个，24h 涨跌中位数 {decimal_display_fixed(breadth.get('medianChange24hPct'), 2)}%。",
+        f"可玩 {liquidity.get('playable', 0)} 个，低流动性 {liquidity.get('lowLiquidity', 0)} 个，统一成交额样本 {liquidity.get('comparableCount', 0)} 个。",
+        f"高波动 {high_volatility} 个，高风险 {high_risk} 个，异常振幅 {risk.get('abnormalMoves', 0)} 个。",
+    ]
+    if funding.get("sampled"):
+        highlights.append(
+            f"资金费率样本 {funding.get('sampled')} 个：多头付费 {funding.get('positive')} / 空头付费 {funding.get('negative')} / 持平 {funding.get('neutral')}；均值 {funding.get('avgFundingRatePct')}%。"
+        )
+        if funding.get("positive", 0) >= funding.get("negative", 0) * 1.5 and funding.get("sampled", 0) >= 3:
+            highlights.append("多头情绪偏热、资金费率普遍为正，警惕追高拥挤与回拨。")
+        elif funding.get("negative", 0) >= funding.get("positive", 0) * 1.5 and funding.get("sampled", 0) >= 3:
+            highlights.append("空头情绪偏强、资金费率普遍为负，关注超跌反弹与做空回补。")
     return {
         "marketRegime": regime,
+        "marketBias": market_bias,
         "confidence": 58 if leaders else 35,
         "summary": regime_text,
-        "highlights": [
-            f"上涨 {rising} 个，下跌 {falling} 个，24h 涨跌中位数 {decimal_display_fixed(breadth.get('medianChange24hPct'), 2)}%。",
-            f"可玩 {liquidity.get('playable', 0)} 个，低流动性 {liquidity.get('lowLiquidity', 0)} 个，统一成交额样本 {liquidity.get('comparableCount', 0)} 个。",
-            f"高波动 {high_volatility} 个，高风险 {high_risk} 个，异常振幅 {risk.get('abnormalMoves', 0)} 个。",
-        ],
+        "highlights": highlights,
         "watchlist": watchlist,
         "riskWarnings": [
             "不要只按振幅选择合约，成交量不足、浮动过大和高风险标签需要优先排除。",
-            "该分析不构成交易指令，开仓前仍需确认盘口、杠杆和止损。",
+            "方向倾向与入手价位仅为研究参考，不构成投资建议，请独立决策并严格风控。",
         ],
         "suggestedFilters": ["优先查看可玩 + 低风险", "成交额使用 USDT 口径", "选择中高浮动但不过热的结果"],
         "generatedAt": now_ms(),
@@ -6906,6 +7769,7 @@ def parse_radar_market_llm_analysis(parsed: dict[str, Any], market_summary: dict
     if regime not in allowed_regimes:
         regime = "mixed"
     allowed_ids = radar_summary_inst_ids(market_summary)
+    prices_by_id = radar_item_prices_by_id(market_summary)
     watchlist: list[dict[str, str]] = []
     raw_watchlist = parsed.get("watchlist")
     if isinstance(raw_watchlist, list):
@@ -6915,11 +7779,15 @@ def parse_radar_market_llm_analysis(parsed: dict[str, Any], market_summary: dict
             inst_id = radar_clean_text(item.get("instId") or item.get("inst_id")).upper()
             if not inst_id or inst_id not in allowed_ids:
                 continue
+            direction = radar_clean_direction(item.get("direction"))
+            entry_zone = radar_validate_entry_zone(item.get("entryZone"), prices_by_id.get(inst_id, {}))
             watchlist.append(
                 {
                     "instId": inst_id,
                     "reason": radar_clean_text(item.get("reason"), "指标处于候选池前列，值得进一步查看。"),
                     "riskNote": radar_clean_text(item.get("riskNote") or item.get("risk"), "需要复核流动性、盘口和止损空间。"),
+                    "direction": direction,
+                    "entryZone": entry_zone,
                 }
             )
             if len(watchlist) >= 5:
@@ -6930,6 +7798,7 @@ def parse_radar_market_llm_analysis(parsed: dict[str, Any], market_summary: dict
     scan = market_summary.get("scan") if isinstance(market_summary.get("scan"), dict) else {}
     return {
         "marketRegime": regime,
+        "marketBias": radar_clean_direction(parsed.get("marketBias")),
         "confidence": coerce_int(parsed.get("confidence"), 60, 0, 100),
         "summary": radar_clean_text(parsed.get("summary"), "AI 已基于雷达摘要完成大盘分析。"),
         "highlights": radar_string_list(parsed.get("highlights"), 6),
@@ -6945,10 +7814,53 @@ def parse_radar_market_llm_analysis(parsed: dict[str, Any], market_summary: dict
     }
 
 
+def radar_llm_config_ready(config: dict[str, Any]) -> bool:
+    """LLM analysis only runs when every required field is configured."""
+    return bool(
+        config.get("enabled")
+        and str(config.get("baseUrl") or "").strip()
+        and str(config.get("model") or "").strip()
+        and str(config.get("apiKey") or "").strip()
+    )
+
+
+def radar_llm_not_configured_payload() -> dict[str, Any]:
+    """Explicit 'not configured' state. Never emits rule-generated text as AI output."""
+    return {
+        "status": "not-configured",
+        "source": "llm-not-configured",
+        "marketRegime": "",
+        "marketBias": "neutral",
+        "confidence": 0,
+        "summary": "",
+        "highlights": [],
+        "watchlist": [],
+        "riskWarnings": [],
+        "suggestedFilters": [],
+        "warnings": ["尚未配置 LLM，AI 大盘分析未运行。"],
+        "setupGuide": {
+            "title": "尚未配置 LLM，无法生成 AI 大盘分析",
+            "description": "为避免用指标规则数据冒充 AI 结论，未配置模型时本页不展示分析结果。请先在「设置 · AI 配置」中完成配置。",
+            "steps": [
+                "打开「设置 · AI 配置」，将「启用 LLM」开关打开",
+                "选择供应商并填写 Base URL（OpenAI 兼容的 /chat/completions 接口）",
+                "填写模型名称与 API Key，然后保存配置",
+                "回到合约雷达，点击「重新检测」即可生成 AI 分析",
+            ],
+            "requiredFields": ["启用 LLM", "Base URL", "模型名称", "API Key"],
+            "providerHint": "支持 OpenAI、DeepSeek、通义千问、Kimi、OpenRouter、硅基流动、本地 Ollama 等 OpenAI 兼容接口。",
+            "settingsPath": "#/settings/llm",
+        },
+        "generatedAt": now_ms(),
+        "scanTs": 0,
+        "cacheAgeMs": 0,
+    }
+
+
 def run_radar_market_llm_analysis(market_summary: dict[str, Any]) -> dict[str, Any]:
     config = stored_llm_config()
-    if not config.get("enabled") or not config.get("baseUrl") or not config.get("model") or not config.get("apiKey"):
-        return fallback_radar_market_analysis(market_summary, "AI 大盘分析不可用：LLM 配置未启用或不完整。")
+    if not radar_llm_config_ready(config):
+        return radar_llm_not_configured_payload()
 
     try:
         completion = llm_chat_completion(
@@ -6958,9 +7870,11 @@ def run_radar_market_llm_analysis(market_summary: dict[str, Any]) -> dict[str, A
                     "role": "system",
                     "content": (
                         "你是谨慎的永续合约大盘雷达分析助手。只基于输入 JSON 摘要分析市场状态。"
-                        "重点根据合约成交量、24h 振幅、近期 K 线浮动和量能脉冲判断是否适合入手观察。"
-                        "不得输出做多、做空、保证盈利、必须交易、已经下单等措辞。"
-                        "不得修改排名或分数。只返回紧凑 JSON 对象，不要 Markdown，不要代码块，不要解释 JSON 之外的文字。"
+                        "重点根据合约成交量、24h 振幅、近期 K 线浮动、量能脉冲，以及 sentiment 中的资金费率方向与持仓名义市值，"
+                        "判断多空博弈、持仓拥挤，并给出研究参考：整体方向倾向(marketBias)、各 watchlist 合约的方向(direction)与参考入手价位区间(entryZone)。"
+                        "direction 只取 long/short/neutral；entryZone 必须基于摘要中提供的 last/high24h/low24h 真实价格推导，不得编造价格或超出真实价格范围。"
+                        "所有输出仅为研究参考，不构成投资建议，不得保证盈利或要求必须交易；不得修改排名或分数。"
+                        "只返回紧凑 JSON 对象，不要 Markdown，不要代码块，不要解释 JSON 之外的文字。"
                     ),
                 },
                 {
@@ -6968,17 +7882,21 @@ def run_radar_market_llm_analysis(market_summary: dict[str, Any]) -> dict[str, A
                     "content": json.dumps(
                         {
                             "instruction": (
-                                "根据 marketSummary 输出：marketRegime(trend/range/mixed/risk-off)、confidence(0-100)、"
-                                "summary、highlights、watchlist[{instId,reason,riskNote}]、riskWarnings、suggestedFilters、warnings。"
-                                "watchlist 只能使用 marketSummary 中出现的 instId。reason 必须解释成交量与浮动是否支持入手观察。"
+                                "根据 marketSummary 输出：marketRegime(trend/range/mixed/risk-off)、marketBias(long/short/neutral)、confidence(0-100)、"
+                                "summary、highlights、watchlist[{instId,reason,riskNote,direction,entryZone}]、riskWarnings、suggestedFilters、warnings。"
+                                "watchlist 只能使用 marketSummary 中出现的 instId。"
+                                "direction 为该合约的研究方向倾向(long/short/neutral)；entryZone 必须基于该合约的 last/high24h/low24h 给出价位区间(如\"回踩 X~Y 分批\")，不得超出真实价格范围，不得编造价格。"
+                                "reason 必须结合成交量、浮动与 sentiment 资金费率/持仓规模，解释多空博弈与是否支持入手观察。"
+                                "若 funding 多头付费占优说明情绪偏热，空头付费占优说明情绪偏冷，需在 riskWarnings 提示拥挤或回拨风险。"
                                 "所有字符串保持短句，summary 不超过 60 字，数组最多 3 项。严格使用双引号 JSON，禁止尾随逗号。"
                             ),
                             "outputExample": {
                                 "marketRegime": "mixed",
+                                "marketBias": "long",
                                 "confidence": 65,
                                 "summary": "成交量集中但浮动分化，优先观察可玩且不过热的合约。",
                                 "highlights": ["可玩合约占比偏高", "部分合约浮动过大"],
-                                "watchlist": [{"instId": "BTC-USDT-SWAP", "reason": "成交量充足且浮动适中", "riskNote": "确认盘口和止损空间"}],
+                                "watchlist": [{"instId": "BTC-USDT-SWAP", "reason": "成交量充足且浮动适中", "riskNote": "确认盘口和止损空间", "direction": "long", "entryZone": "回踩 60000~61000 分批"}],
                                 "riskWarnings": ["规避低成交量高浮动合约"],
                                 "suggestedFilters": ["可玩", "低风险"],
                                 "warnings": [],
@@ -7003,17 +7921,21 @@ def run_radar_market_llm_analysis(market_summary: dict[str, Any]) -> dict[str, A
 
 
 def cached_radar_market_analysis(request: RadarScanRequest, radar_payload: dict[str, Any], force: bool = False) -> dict[str, Any]:
-    market_summary = radar_payload.get("marketSummary") if isinstance(radar_payload.get("marketSummary"), dict) else None
-    if market_summary is None:
-        market_summary = build_radar_market_summary(radar_payload)
+    # No configured model => no analysis at all. Check before reading the cache so
+    # a stale rule-based snapshot can never be presented as AI output.
+    if not radar_llm_config_ready(stored_llm_config()):
+        return radar_llm_not_configured_payload()
+
     cache_key = radar_market_analysis_key(request, radar_payload)
     now = now_ms()
     snapshot = None if force else load_radar_analysis_snapshot(cache_key)
     if snapshot:
         age_ms = now - int(snapshot["ts"])
-        if age_ms <= RADAR_ANALYSIS_CACHE_SECONDS * 1000:
-            return radar_analysis_payload_with_cache_meta(snapshot["payload"], "radar-analysis-cache", int(snapshot["ts"]))
+        cached_payload = snapshot.get("payload") if isinstance(snapshot.get("payload"), dict) else {}
+        if age_ms <= RADAR_ANALYSIS_CACHE_SECONDS * 1000 and str(cached_payload.get("source") or "") != "llm-not-configured":
+            return radar_analysis_payload_with_cache_meta(cached_payload, "radar-analysis-cache", int(snapshot["ts"]))
 
+    market_summary = enrich_radar_sentiment(radar_payload)
     payload = run_radar_market_llm_analysis(market_summary)
     ts = now_ms()
     save_radar_analysis_snapshot(cache_key, payload, ts)
@@ -7163,6 +8085,119 @@ def recent_signals_for_llm(strategy_id: int, limit: int = 8) -> list[dict[str, A
     ]
 
 
+def _fetch_market_sentiment() -> tuple[dict[str, Any], list[str]]:
+    """拉取情绪输入：资金费率分布 + OI 总量，全部走已有短缓存，失败只降级不抛错。"""
+    warnings: list[str] = []
+    funding_rates: list[Decimal] = []
+    for inst_id in market_context.SENTIMENT_SAMPLE_INST_IDS:
+        try:
+            raw = client.get_funding_rate(inst_id, timeout_seconds=2.0)
+            rate = safe_decimal(raw.get("fundingRate")) if isinstance(raw, dict) else None
+        except Exception:
+            rate = None
+        if rate is not None:
+            funding_rates.append(rate)
+    if not funding_rates:
+        warnings.append("资金费率读取失败，情绪缺少 funding 维度")
+
+    oi_total: Decimal | None = None
+    oi_count = 0
+    try:
+        oi_map = _cached_open_interest_bulk()
+        values = [safe_decimal(value) for value in oi_map.values()] if isinstance(oi_map, dict) else []
+        cleaned = [value for value in values if value is not None]
+        if cleaned:
+            oi_total = sum(cleaned, Decimal("0"))
+            oi_count = len(cleaned)
+    except Exception:
+        warnings.append("未平仓量读取失败")
+
+    positive = sum(1 for value in funding_rates if value > Decimal("0"))
+    negative = sum(1 for value in funding_rates if value < Decimal("0"))
+    neutral = len(funding_rates) - positive - negative
+    avg_funding = (sum(funding_rates, Decimal("0")) / Decimal(len(funding_rates))) if funding_rates else None
+    sentiment = {
+        "funding": {
+            "sampled": len(funding_rates),
+            "positive": positive,
+            "negative": negative,
+            "neutral": neutral,
+            "avgFundingRatePct": decimal_display_fixed(avg_funding * 100, 4) if avg_funding is not None else "",
+        },
+        "openInterest": {
+            "sampled": oi_count,
+            "totalOiUsd": decimal_display_fixed(oi_total, 0) if oi_total is not None else "",
+        },
+    }
+    return sentiment, warnings
+
+
+def refresh_market_context(force: bool = False) -> dict[str, Any] | None:
+    """拉取并缓存「大盘 + 赛道 + 情绪」摘要，供 LLM 判断参考。
+
+    绝不抛异常：拉取失败时优先在 15 分钟内复用旧快照，否则返回 None，
+    由调用方把对应字段标注为不可读，不阻断信号生成。
+    """
+    now = now_ms()
+    with market_context_cache_lock:
+        payload = market_context_cache.get("payload")
+        ts = int(market_context_cache.get("ts") or 0)
+        age_ms = max(0, now - ts) if ts else None
+        if payload and not force and age_ms is not None and age_ms <= MARKET_CONTEXT_CACHE_MS:
+            return payload
+    try:
+        tickers = client.get_tickers()
+        sentiment, warnings = _fetch_market_sentiment()
+        context = market_context.build_market_context(tickers, sentiment, warnings)
+        if not context.get("breadth", {}).get("total"):
+            raise ValueError("全市场行情为空")
+        with market_context_cache_lock:
+            market_context_cache["payload"] = context
+            market_context_cache["ts"] = now
+        return context
+    except Exception as exc:
+        logger.warning("市场上下文刷新失败，尝试复用旧快照：%s", exc)
+        with market_context_cache_lock:
+            payload = market_context_cache.get("payload")
+            ts = int(market_context_cache.get("ts") or 0)
+            age_ms = max(0, now - ts) if ts else None
+            if payload and age_ms is not None and age_ms <= MARKET_CONTEXT_STALE_MS:
+                return payload
+        return None
+
+
+def cached_market_context() -> dict[str, Any] | None:
+    """读取市场上下文（命中 60 秒缓存则直接返回，否则触发一次刷新）。"""
+    return refresh_market_context()
+
+
+def market_context_brief(context: dict[str, Any] | None) -> dict[str, Any]:
+    """把完整市场上下文压缩成提示词用的紧凑摘要；不可读时明确标注，不伪造数据。"""
+    if not context:
+        return {"available": False, "note": "本次未能读取大盘/赛道/情绪数据，仅依据本合约K线判断，必要时应降低置信度。"}
+    breadth = context.get("breadth") if isinstance(context.get("breadth"), dict) else {}
+    majors = context.get("majors") if isinstance(context.get("majors"), dict) else {}
+    sentiment = context.get("sentiment") if isinstance(context.get("sentiment"), dict) else {}
+    return {
+        "available": True,
+        "bias": context.get("bias") or "mixed",
+        "breadth": {
+            "total": breadth.get("total"),
+            "rising": breadth.get("rising"),
+            "falling": breadth.get("falling"),
+            "advancePct": breadth.get("advancePct"),
+            "medianChange24hPct": breadth.get("medianChange24hPct"),
+        },
+        "majors": {
+            "BTC": majors.get("btc") or {},
+            "ETH": majors.get("eth") or {},
+        },
+        "sectors": market_context.sector_brief(context, limit=6),
+        "sentiment": sentiment,
+        "warnings": context.get("warnings") or [],
+    }
+
+
 def llm_direct_signal_prompt(
     strategy: dict[str, Any],
     candles: list[dict[str, Any]],
@@ -7174,20 +8209,29 @@ def llm_direct_signal_prompt(
         "task": "generate_okx_perpetual_signal",
         "mode": "direct_signal",
         "constraints": [
-            "只基于输入数据判断，不编造行情",
+            "只基于输入数据判断，不编造行情；数据不足时输出 hold 并说明缺什么",
             "action 只能是 long、short、hold",
-            f"confidence 必须是 0-100；低于 {AUTOMATION_LLM_MIN_CONFIDENCE} 系统不会自动交易",
+            f"confidence 必须是 0-100 整数，按 system 中的证据充分度标尺打分；低于 {AUTOMATION_LLM_MIN_CONFIDENCE} 系统不会自动交易",
+            "reasons/risks 每条引用具体数值，invalidation 写成可验证的失效条件",
+            "已有同向持仓时不要重复建议加仓，持仓与判断相反时在 notes 提示",
             "不要输出 Markdown，只输出 JSON 对象",
-            "LLM 不直接下单，系统会做风控并只在 OKX 模拟盘执行",
+        ],
+        "decision_guide": [
+            "第 0 步定环境：先看 market_context 的 bias、大盘 BTC/ETH 涨跌、全市场涨跌家数与赛道强弱，判断当前是顺势、逆势还是震荡环境",
+            "第 1 步看趋势结构：MA5/MA20/MA60 是否多头或空头排列，当前价在均线之上还是之下",
+            "第 2 步看动量与位置：changePct 方向与幅度，当前价靠近 recent20High 还是 recent20Low",
+            "第 3 步看量价：recent20RangePct 波动率与 volume20Avg，放量突破还是缩量震荡",
+            "第 4 步看情绪与持仓：sentiment 的资金费率与多空倾向、current_position、recent_signals 是否与新判断一致",
+            "环境与个币冲突时（如大盘 risk-off 却想开多）降低 confidence 并在 risks 写明；证据不足或多空矛盾时选 hold",
         ],
         "expected_json_schema": {
             "action": "long|short|hold",
-            "confidence": "0-100 integer",
-            "summary": "一句话交易判断",
-            "reasons": ["判断依据"],
-            "risks": ["主要风险"],
-            "invalidation": "信号失效条件",
-            "notes": "补充说明",
+            "confidence": "0-100 integer（证据充分度：90+ 强共振 / 70-89 一致但有次要矛盾 / 50-69 分歧 / <50 不足）",
+            "summary": "一句话交易判断，明确方向或观望原因",
+            "reasons": ["具体的判断依据，含数值"],
+            "risks": ["具体的主要风险，含数值"],
+            "invalidation": "可验证的信号失效条件（如跌破 MA20 且收盘确认）",
+            "notes": "持仓关联或其它补充说明",
         },
         "strategy": {
             "id": strategy.get("id"),
@@ -7203,6 +8247,7 @@ def llm_direct_signal_prompt(
             "min_confidence": AUTOMATION_LLM_MIN_CONFIDENCE,
         },
         "market_summary": candle_market_summary(candles),
+        "market_context": market_context_brief(cached_market_context()),
         "recent_candles": [compact_candle_for_llm(item) for item in candles[-AUTOMATION_LLM_PROMPT_CANDLES:]],
         "history_scope": {
             "summary_candles": min(len(candles), AUTOMATION_LLM_LOOKBACK_CANDLES),
@@ -7427,17 +8472,18 @@ def risk_check_item(key: str, label: str, status: str, message: str, value: str 
     return {"key": key, "label": label, "status": status, "message": message, "value": value}
 
 
-def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | None = None) -> dict[str, Any]:
+def automation_risk_preview(
+    strategy: dict[str, Any],
+    signal: dict[str, Any] | None = None,
+    context: EvaluationContext | None = None,
+) -> dict[str, Any]:
+    ctx = context or EvaluationContext()
     checks: list[dict[str, str]] = []
-    blocked_messages: list[str] = []
-    warning_messages: list[str] = []
+    action_kind = classify_signal_action((signal or {}).get("action"))
+    is_exit = action_kind == "exit"
 
     def add_check(key: str, label: str, status: str, message: str, value: str = "") -> None:
         checks.append(risk_check_item(key, label, status, message, value))
-        if status == "block":
-            blocked_messages.append(message)
-        elif status == "warn":
-            warning_messages.append(message)
 
     execution_mode = str(strategy.get("execution_mode") or "")
     template = str(strategy.get("template") or "")
@@ -7446,6 +8492,8 @@ def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | N
     llm_confidence = coerce_int(llm_confidence_raw, -1, -1, 100) if llm_confidence_raw is not None else -1
     if signal_action in {"long", "short"}:
         add_check("signal", "当前信号", "pass", f"当前策略产生{'做多' if signal_action == 'long' else '做空'}候选信号。", signal_action)
+    elif is_exit:
+        add_check("signal", "当前信号", "pass", f"当前触发{'止损' if signal_action == 'stop_loss' else '止盈'}平仓信号。", signal_action)
     elif signal_action == "hold":
         add_check("signal", "当前信号", "warn", "当前没有做多/做空候选信号，自动执行不会提交订单。", "观望")
     else:
@@ -7458,7 +8506,9 @@ def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | N
     else:
         add_check("execution_mode", "执行模式", "block", "执行模式不受支持。", execution_mode)
 
-    global_state = automation_global_state()
+    global_state = ctx.global_state(automation_global_state)
+    if not global_state.get("stateAvailable", True):
+        add_check("global_state", "安全状态", "block", "无法读取自动化全局安全状态，已按暂停处理。", "未知")
     if global_state.get("globalPaused"):
         add_check(
             "global_pause",
@@ -7476,8 +8526,8 @@ def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | N
             "已熔断",
         )
 
-    llm_config = stored_llm_config() if template == "llm_direct" else {}
-    if template == "llm_direct":
+    llm_config = ctx.llm_config(stored_llm_config) if (template == "llm_direct" and not is_exit) else {}
+    if template == "llm_direct" and not is_exit:
         if not llm_config.get("enabled"):
             add_check("llm", "LLM 信号", "block", "LLM 未启用，无法生成直接交易信号。", "未启用")
         elif signal and signal.get("llm_error"):
@@ -7514,20 +8564,16 @@ def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | N
     max_position = decimal_value(str(strategy["max_position_contracts"]), "单合约最大持仓")
     take_profit_pct = strategy_percent_value(strategy, "take_profit_pct")
     stop_loss_pct = strategy_percent_value(strategy, "stop_loss_pct")
+    # 保存策略时已强制 sz <= max_order_contracts，而运行时的 size 也取自
+    # 同一条策略记录，正常策略这条比较恒为通过。不再生成绿色的占位检查项，
+    # 避免风控面板把「永远不会被触发的限制」展示成一层保护；仅当数据库出现
+    # 不一致的脏数据（旧数据 / 绕过 API 写入）时保留 fail-closed 拦截。
     if size > max_order:
         add_check(
             "max_order",
             "单笔限制",
             "block",
             "策略下单张数超过单笔最大张数，风控会拦截。",
-            f"{decimal_display(size)} / {decimal_display(max_order)} 张",
-        )
-    else:
-        add_check(
-            "max_order",
-            "单笔限制",
-            "pass",
-            "下单张数未超过单笔最大张数。",
             f"{decimal_display(size)} / {decimal_display(max_order)} 张",
         )
 
@@ -7582,30 +8628,45 @@ def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | N
     projected_contracts: Decimal | None = None
     execution_action = "none"
     position_side = "unknown"
+    account_payload: dict[str, Any] = {}
     if has_credentials:
-        try:
-            account_payload = refresh_account_cache_sync("simulated")
-        except Exception as exc:
-            fallback = account_fallback_response("simulated", str(exc))
+        cached_account, account_error = ctx.account(refresh_account_cache_sync)
+        if account_error is not None:
+            fallback = account_fallback_response("simulated", str(account_error))
             if fallback:
                 account_payload = fallback
                 account_source = str(fallback.get("source") or "cache")
             else:
                 account_payload = {}
-                if execution_mode == "simulated_auto":
-                    add_check("account", "账户持仓", "block", f"无法获取虚拟盘账户/持仓：{exc}", "获取失败")
-                else:
-                    add_check("account", "账户持仓", "warn", f"无法获取虚拟盘账户/持仓：{exc}", "获取失败")
+                add_check(
+                    "account",
+                    "账户持仓",
+                    "block" if execution_mode == "simulated_auto" else "warn",
+                    f"无法获取虚拟盘账户/持仓：{account_error}",
+                    "获取失败",
+                )
         else:
+            account_payload = cached_account or {}
             account_source = str(account_payload.get("source") or "okx")
 
         if account_payload:
             position_state = automation_position_state(account_payload, str(strategy["inst_id"]))
             current_contracts = position_state["totalContracts"]
             position_side = str(position_state["side"])
-            execution_action = automation_execution_action(signal_action, position_state)
-            projected_contracts = size if execution_action in {"open", "reverse"} else current_contracts
-            if execution_action == "skip_same_direction":
+            if is_exit:
+                execution_action = "close"
+                has_open_position = bool(position_state["rows"])
+                add_check(
+                    "exit_position",
+                    "平仓持仓",
+                    "pass" if has_open_position else "block",
+                    "已确认待平仓持仓，将按持仓方向全平。" if has_open_position else "账户中未找到对应持仓，平仓请求未提交。",
+                    f"{position_side} {decimal_display(current_contracts)} 张",
+                )
+            else:
+                execution_action = automation_execution_action(signal_action, position_state)
+                projected_contracts = size if execution_action in {"open", "reverse"} else current_contracts
+            if not is_exit and execution_action == "skip_same_direction":
                 add_check(
                     "position",
                     "当前持仓",
@@ -7629,7 +8690,7 @@ def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | N
                     "自动下单后会超过单合约最大持仓。",
                     f"{decimal_display(projected_contracts)} / {decimal_display(max_position)} 张",
                 )
-            else:
+            elif not is_exit:
                 add_check(
                     "position",
                     "当前持仓",
@@ -7640,24 +8701,89 @@ def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | N
     else:
         add_check("position", "当前持仓", "warn", "未配置虚拟盘 API，暂不能读取真实持仓。", "未知")
 
-    allowed = not blocked_messages and execution_mode == "simulated_auto" and signal_action in {"long", "short"}
-    severity = "ok" if allowed else "blocked" if blocked_messages else "warning"
-    if allowed:
-        if execution_action == "skip_same_direction":
-            message = "当前配置通过风控，但已有同向持仓，运行时会跳过重复开仓。"
-        elif execution_action in {"reverse", "close_opposite"}:
-            message = "当前配置通过风控，反向信号会先市价全平再开新方向。"
+    daily_pct = strategy_percent_value(strategy, "daily_position_pct")
+    daily_equity: Decimal | None = None
+    daily_limit_value = Decimal("0")
+    daily_used_value = Decimal("0")
+    daily_planned_value = Decimal("0")
+    if daily_pct > 0 and not is_exit:
+        daily_equity = account_equity(account_payload or None)
+        daily_used = automation_daily_used_notional(strategy_id, daily_start_ms())
+        if daily_equity is not None:
+            daily_limit_value = daily_equity * daily_pct / Decimal("100")
+        if daily_used is not None:
+            daily_used_value = daily_used
+        if action_kind != "open":
+            if daily_equity is None or daily_used is None:
+                add_check(
+                    "daily_limit", "每日仓位", "pass",
+                    "账户权益或当日用量暂不可读；产生开仓信号时会拦截并提示。", "待确认",
+                )
+            else:
+                add_check(
+                    "daily_limit", "每日仓位", "pass",
+                    f"当日额度 {usd_display(daily_used_value)} / {usd_display(daily_limit_value)} USDT；本次无开仓动作，不占用额度。",
+                    f"{usd_display(daily_used_value)} / {usd_display(daily_limit_value)}",
+                )
+        elif daily_equity is None or daily_used is None:
+            add_check(
+                "daily_limit",
+                "每日仓位",
+                "block",
+                "无法读取模拟盘账户权益或当日已用额度，已拦截自动开仓。",
+                "数据不可用",
+            )
         else:
-            message = "当前配置通过风控，可提交虚拟盘订单。"
-    elif blocked_messages:
-        message = blocked_messages[0]
-    elif warning_messages:
-        message = warning_messages[0]
+            daily_planned_value = automation_order_notional(
+                str(strategy["inst_id"]),
+                (signal or {}).get("sz") or strategy.get("sz"),
+                (signal or {}).get("price"),
+            )
+            if daily_planned_value <= 0:
+                add_check(
+                    "daily_limit", "每日仓位", "block",
+                    "缺少合约面值或有效价格，无法估算本次开仓名义金额，已拦截自动开仓。", "估算失败",
+                )
+            elif daily_used_value + daily_planned_value > daily_limit_value:
+                add_check(
+                    "daily_limit",
+                    "每日仓位",
+                    "block",
+                    f"当日开仓额度已用 {usd_display(daily_used_value)} / {usd_display(daily_limit_value)} USDT，"
+                    f"本次预计 {usd_display(daily_planned_value)} USDT 将超出每日 {decimal_display(daily_pct)}% 上限。",
+                    f"{usd_display(daily_used_value)} / {usd_display(daily_limit_value)}",
+                )
+            else:
+                add_check(
+                    "daily_limit",
+                    "每日仓位",
+                    "pass",
+                    f"当日额度充足：本次预计占用 {usd_display(daily_planned_value)} USDT，"
+                    f"剩余 {usd_display(daily_limit_value - daily_used_value - daily_planned_value)} USDT。",
+                    f"{usd_display(daily_used_value)} / {usd_display(daily_limit_value)}",
+                )
+    elif daily_pct > 0:
+        add_check("daily_limit", "每日仓位", "pass", "止盈止损平仓不占用每日开仓额度。", "不适用")
     else:
-        message = "当前配置不会自动提交订单。"
+        add_check("daily_limit", "每日仓位", "pass", "未启用每日仓位额度（0% 表示不限制）。", "未启用")
+
+    if is_exit:
+        # 开仓专属限制不应在平仓风控快照里显示为「拦截」，否则快照与实际执行语义相反。
+        for item in checks:
+            if str(item.get("key") or "") in EXIT_SKIP_KEYS:
+                item["status"] = "pass"
+                item["message"] = "止盈止损平仓不适用该开仓限制。"
+                item["value"] = "不适用"
+    allowed, severity, message = decide_automation_risk(
+        checks=checks,
+        execution_mode=execution_mode,
+        action_kind=action_kind,
+        execution_action=execution_action,
+    )
 
     return {
         "allowed": allowed,
+        "actionKind": action_kind,
         "severity": severity,
         "message": message,
         "checks": checks,
@@ -7674,6 +8800,12 @@ def automation_risk_preview(strategy: dict[str, Any], signal: dict[str, Any] | N
         "takeProfitPct": decimal_display(take_profit_pct),
         "stopLossPct": decimal_display(stop_loss_pct),
         "cooldownRemainingSeconds": cooldown_remaining,
+        "dailyPositionPct": decimal_display(daily_pct),
+        "dailyEquity": usd_display(daily_equity) if daily_equity is not None else "",
+        "dailyLimit": usd_display(daily_limit_value),
+        "dailyUsed": usd_display(daily_used_value),
+        "dailyPlanned": usd_display(daily_planned_value),
+        "dailyDayStart": daily_start_ms(),
         "accountSource": account_source,
         "updatedAt": now_ms(),
     }
@@ -7692,8 +8824,21 @@ def record_automation_signal(
     raw_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_json_payload = dict(signal)
+    if decision == "submitted" and str(signal.get("action") or "").strip().lower() in {"long", "short"}:
+        notional = automation_order_notional(
+            str(strategy["inst_id"]),
+            signal.get("sz") or strategy.get("sz"),
+            signal.get("price"),
+        )
+        if notional > 0:
+            raw_json_payload["notional"] = decimal_display(notional)
     if raw_payload:
         raw_json_payload["execution_payload"] = raw_payload
+        # 审计表、告警判定和前端详情都从顶层读取这些字段；只放进
+        # execution_payload 会导致失败时已发生的平仓步骤丢失。
+        for audit_key in ("risk_snapshot", "execution_steps", "compensation_required"):
+            if audit_key in raw_payload:
+                raw_json_payload[audit_key] = raw_payload[audit_key]
     llm_analysis = signal.get("llm_analysis") if isinstance(signal.get("llm_analysis"), dict) else None
     if not llm_analysis and str(strategy.get("template") or "") != "llm_direct":
         llm_analysis = analyze_signal_with_llm(strategy, signal, decision, message)
@@ -7842,8 +8987,227 @@ def close_request_for_position(strategy: dict[str, Any], position: dict[str, Any
     )
 
 
-def execute_automation_order(strategy: dict[str, Any], signal: dict[str, Any]) -> dict[str, Any]:
-    account_payload = refresh_account_cache_sync("simulated")
+def _open_fill_avg_price(open_result: dict[str, Any], inst_id: str) -> tuple[str, str]:
+    """从开仓返回结果提取 (avgPx, ordId)。优先用响应内 avgPx，否则按 ordId 回查一次。
+
+    返回 (avg_px, ord_id)，任一可能为空。任何失败都吞掉（返回空），由调用方降级跳过挂单。
+    """
+    data = open_result.get("data") if isinstance(open_result, dict) else None
+    rows = data if isinstance(data, list) else []
+    first = rows[0] if rows and isinstance(rows[0], dict) else {}
+    avg_px = str(first.get("avgPx") or "").strip()
+    ord_id = str(first.get("ordId") or "").strip()
+    if (not avg_px or avg_px == "0") and ord_id and inst_id:
+        try:
+            order = client_for_environment("simulated").get_order(ord_id, inst_id)
+            if order:
+                candidate = str(order.get("avgPx") or "").strip()
+                if candidate and candidate != "0":
+                    avg_px = candidate
+        except Exception:
+            logger.warning("算法单补挂：回查开仓订单成交均价失败，降级跳过挂单。", exc_info=True)
+    return (avg_px if avg_px and avg_px != "0" else ""), ord_id
+
+
+def attach_algo_orders_for_fill(
+    strategy: dict[str, Any],
+    signal: dict[str, Any],
+    open_result: dict[str, Any],
+    pos_side: str,
+    execution_id: str,
+) -> dict[str, Any] | None:
+    """开仓成交后，在交易所侧补挂止盈止损算法单（兜底防线）。
+
+    设计约束（见 docs/exchange-algo-order-design.md）：
+    - 开关 EXCHANGE_ALGO_TPSL_ENABLED 关闭时直接返回 None（默认）。
+    - 仅 simulated_auto 生效；仅模拟盘。
+    - 只在实际拿到成交均价 avgPx 时挂单；拿不到跳过并记 warning，不阻断本地主防线。
+    - 确定性 algo_cl_ord_id（由 execution_id 派生）保证幂等；失败只记 warning 不抛异常。
+    返回审计 step 字典或 None。
+    """
+    if not EXCHANGE_ALGO_TPSL_ENABLED:
+        return None
+    if str(strategy.get("execution_mode") or "") != "simulated_auto":
+        return None
+    tp_pct = strategy_percent_value(strategy, "take_profit_pct")
+    sl_pct = strategy_percent_value(strategy, "stop_loss_pct")
+    if tp_pct <= 0 and sl_pct <= 0:
+        return None
+
+    inst_id = str(strategy.get("inst_id") or "").strip().upper()
+    algo_cl_ord_id = client_order_id_for_execution(f"{execution_id}-algo")
+    avg_px = ""
+    trigger: dict[str, str] = {}
+    step: dict[str, Any] = {
+        "action": "attach-algo-tpsl",
+        "status": "skipped",
+        "posSide": pos_side,
+        "detail": "",
+    }
+    try:
+        # 同一意图已挂过则跳过（幂等）
+        if database.get_algo_order_by_cl_id(algo_cl_ord_id):
+            step["detail"] = "算法单已存在，跳过重复挂单。"
+            return step
+
+        avg_px, ord_id = _open_fill_avg_price(open_result, inst_id)
+        if not avg_px:
+            step["detail"] = "未取得成交均价，跳过条件单兜底（本地轮询仍生效）。"
+            logger.warning("算法单补挂跳过：%s %s 无成交均价。", inst_id, pos_side)
+            return step
+
+        spec = resolve_instrument_spec(inst_id)
+        tick_sz = (spec or {}).get("tick_sz") or (spec or {}).get("tickSz")
+        trigger = algo_trigger_prices(avg_px, pos_side, tp_pct, sl_pct, tick_sz)
+        payload = build_algo_order_payload(
+            inst_id, str(strategy.get("td_mode") or "cross"), pos_side,
+            str(strategy.get("sz") or "1"), trigger, algo_cl_ord_id,
+        )
+        if payload is None:
+            step["detail"] = "无有效触发价，跳过。"
+            return step
+
+        ts = now_ms()
+        database.upsert_algo_order({
+            "algo_cl_ord_id": algo_cl_ord_id,
+            "strategy_id": int(strategy.get("id") or 0),
+            "inst_id": inst_id, "pos_side": pos_side,
+            "td_mode": str(strategy.get("td_mode") or "cross"),
+            "sz": str(strategy.get("sz") or ""), "main_ord_id": ord_id,
+            "avg_px": avg_px, "state": "pending", "created_at": ts, "updated_at": ts,
+        })
+        response = client_for_environment("simulated").place_algo_order(payload)
+        if response_successful(response):
+            database.upsert_algo_order({
+                "algo_cl_ord_id": algo_cl_ord_id, "strategy_id": int(strategy.get("id") or 0),
+                "inst_id": inst_id, "pos_side": pos_side, "state": "attached",
+                "detail": "交易所侧止盈止损已挂。", "created_at": ts, "updated_at": ts,
+            })
+            step["status"] = "ok"
+            step["detail"] = "交易所侧止盈止损已挂（兜底）。"
+        else:
+            database.upsert_algo_order({
+                "algo_cl_ord_id": algo_cl_ord_id, "strategy_id": int(strategy.get("id") or 0),
+                "inst_id": inst_id, "pos_side": pos_side, "state": "pending",
+                "detail": f"OKX 拒单：{str(response)[:200]}", "created_at": ts, "updated_at": ts,
+            })
+            step["detail"] = "OKX 拒绝算法单，本地轮询仍生效。"
+            logger.warning("算法单补挂被 OKX 拒绝：%s", str(response)[:200])
+    except Exception as exc:
+        step["detail"] = f"算法单补挂异常（本地轮询仍生效）：{exc}"
+        logger.warning("算法单补挂异常：%s", exc, exc_info=True)
+    step["request"] = {"avgPx": avg_px, "trigger": trigger}
+    return step
+
+
+def cancel_algo_orders_for_position(
+    inst_id: str, pos_side: str = "", strategy_id: int = 0
+) -> list[dict[str, Any]]:
+    """撤销残留算法单（本地平仓、反转、归档前调用）。
+
+    先按 inst_id + pos_side（及可选 strategy_id）从本地记录找 attached/pending 单，
+    逐个调 OKX 撤单，成功后标记 cancelled。inst_id 传空表示按 strategy_id 撤销该策略
+    所有合约的残留单（用于多合约策略归档），此时必须提供 strategy_id 以防误撤全局单。
+    任何失败只记 warning，不抛异常，不阻断平仓主流程。返回被处理记录的列表（供审计）。
+    """
+    if not EXCHANGE_ALGO_TPSL_ENABLED:
+        return []
+    inst_id = str(inst_id or "").strip().upper()
+    # 安全护栏：按策略全撤必须给出 strategy_id，空合约 + 无策略时拒绝，避免误撤全局算法单。
+    if not inst_id and not strategy_id:
+        return []
+    try:
+        rows = [
+            row for row in database.list_algo_orders(strategy_id=strategy_id, states=["pending", "attached"])
+            if (not inst_id or str(row.get("inst_id") or "").upper() == inst_id)
+            and (not pos_side or str(row.get("pos_side") or "") == pos_side)
+        ]
+    except Exception:
+        logger.warning("撤算法单：读取本地记录失败。", exc_info=True)
+        return []
+
+    client = client_for_environment("simulated")
+    for row in rows:
+        cl_id = str(row.get("algo_cl_ord_id") or "")
+        # 撤单 payload 用记录自身的合约：按策略全撤时各行合约不同，不能用外部入参。
+        row_inst = str(row.get("inst_id") or "").upper()
+        try:
+            response = client.cancel_algo_order({"algoClOrdId": cl_id, "instId": row_inst})
+            if response_successful(response):
+                database.upsert_algo_order({
+                    "algo_cl_ord_id": cl_id,
+                    "strategy_id": int(row.get("strategy_id") or 0),
+                    "inst_id": row_inst,
+                    "pos_side": str(row.get("pos_side") or ""),
+                    "state": "cancelled",
+                    "detail": "平仓/归档已撤销。",
+                    "created_at": int(row.get("created_at") or now_ms()),
+                    "updated_at": now_ms(),
+                })
+            else:
+                logger.warning("撤算法单被 OKX 拒绝：%s %s", cl_id, str(response)[:160])
+        except Exception:
+            logger.warning("撤算法单异常：%s", cl_id, exc_info=True)
+    return rows
+
+
+def reconcile_algo_orders_on_startup() -> dict[str, int]:
+    """进程启动时对账本地算法单记录与 OKX 实际挂单。
+
+    仅处理本地记录的 pending/attached 单：OKX 已不存在则标记 orphan（不再重复撤），
+    避免误撤他人算法单。任何失败降级为空结果，不影响启动。
+    """
+    result = {"checked": 0, "orphan": 0, "kept": 0}
+    if not EXCHANGE_ALGO_TPSL_ENABLED:
+        return result
+    try:
+        rows = database.list_algo_orders(states=["pending", "attached"])
+    except Exception:
+        logger.warning("算法单对账：读取本地记录失败。", exc_info=True)
+        return result
+    if not rows:
+        return result
+
+    client = client_for_environment("simulated")
+    try:
+        response = client.get_algo_orders()
+        data = response.get("data", []) if isinstance(response, dict) else []
+        live_ids = {
+            str(item.get("algoClOrdId") or "") for item in data if isinstance(item, dict)
+        }
+    except Exception:
+        logger.warning("算法单对账：读取 OKX 算法单失败，保留本地记录。", exc_info=True)
+        return result
+
+    for row in rows:
+        cl_id = str(row.get("algo_cl_ord_id") or "")
+        result["checked"] += 1
+        if cl_id and cl_id not in live_ids:
+            database.upsert_algo_order({
+                "algo_cl_ord_id": cl_id,
+                "strategy_id": int(row.get("strategy_id") or 0),
+                "inst_id": str(row.get("inst_id") or ""),
+                "pos_side": str(row.get("pos_side") or ""),
+                "state": "orphan",
+                "detail": "启动时对账：OKX 侧已无该算法单。",
+                "created_at": int(row.get("created_at") or now_ms()),
+                "updated_at": now_ms(),
+            })
+            result["orphan"] += 1
+        else:
+            result["kept"] += 1
+    return result
+
+
+def execute_automation_order(
+    strategy: dict[str, Any],
+    signal: dict[str, Any],
+    *,
+    account_payload: dict[str, Any] | None = None,
+    execution_id: str | None = None,
+) -> dict[str, Any]:
+    if account_payload is None:
+        account_payload = refresh_account_cache_sync("simulated")
     position_state = automation_position_state(account_payload, str(strategy["inst_id"]))
     execution_action = automation_execution_action(str(signal.get("action") or ""), position_state)
     target_side = target_position_side(str(signal.get("action") or ""))
@@ -7870,7 +9234,13 @@ def execute_automation_order(strategy: dict[str, Any], signal: dict[str, Any]) -
     steps: list[dict[str, Any]] = []
     if execution_action in {"reverse", "close_opposite"}:
         for position in close_rows:
-            close_result = close_position_for_environment("simulated", close_request_for_position(strategy, position))
+            # P2-2：反转平仓前撤条件单，避免旧仓条件单与新仓方向冲突。
+            cancel_algo_orders_for_position(
+                str(strategy.get("inst_id") or ""), position_direction(position), int(strategy.get("id") or 0)
+            )
+            close_result = close_position_for_environment(
+                "simulated", close_request_for_position(strategy, position), origin=ORDER_ORIGIN_AUTOMATION
+            )
             close_request = close_request_for_position(strategy, position)
             steps.append(
                 {
@@ -7888,7 +9258,37 @@ def execute_automation_order(strategy: dict[str, Any], signal: dict[str, Any]) -
         should_open = position_state[f"{target_side}Contracts"] <= 0
     if should_open:
         open_request = open_order_request(strategy, signal)
-        open_result = place_order_for_environment("simulated", open_request)
+        try:
+            if execution_id:
+                open_result = place_order_for_environment(
+                    "simulated",
+                    open_request,
+                    cl_ord_id=client_order_id_for_execution(execution_id),
+                    origin=ORDER_ORIGIN_AUTOMATION,
+                )
+            else:
+                open_result = place_order_for_environment(
+                    "simulated", open_request, origin=ORDER_ORIGIN_AUTOMATION
+                )
+        except Exception as exc:
+            if steps:
+                # 平仓已成交但反向开仓失败：不自动回滚（会放大风险），保留全部
+                # 已发生步骤，交由上层熔断并生成需人工补偿的 critical 告警。
+                steps.append(
+                    {
+                        "action": "compensation-required",
+                        "status": "failed",
+                        "message": f"反向持仓已平仓，但新方向开仓失败：{exc}。已触发熔断，需人工确认仓位。",
+                        "request": open_request.model_dump(),
+                        "result": {"error": str(exc)},
+                    }
+                )
+                raise AutomationExecutionError(
+                    f"反向平仓已提交但新方向开仓失败：{exc}",
+                    steps=steps,
+                    compensation_required=True,
+                ) from exc
+            raise
         steps.append(
             {
                 "action": "place",
@@ -7899,6 +9299,13 @@ def execute_automation_order(strategy: dict[str, Any], signal: dict[str, Any]) -
                 "result": open_result,
             }
         )
+        # P2-2：开仓成交后补挂交易所侧止盈止损（开关关闭或未拿到成交价时自动跳过）。
+        # 只追加审计 step，不改变开仓结果，也不抛异常。
+        algo_step = attach_algo_orders_for_fill(
+            strategy, signal, open_result, target_side, execution_id or ""
+        )
+        if algo_step:
+            steps.append(algo_step)
 
     return {
         "ok": True,
@@ -7913,7 +9320,11 @@ def execute_automation_exit(strategy: dict[str, Any], signal: dict[str, Any]) ->
     if not isinstance(position, dict):
         raise HTTPException(status_code=400, detail="止盈止损信号缺少持仓信息。")
     close_request = close_request_for_position(strategy, position)
-    close_result = close_position_for_environment("simulated", close_request)
+    # P2-2：本地平仓前先撤交易所侧条件单，避免同一仓位被双轨平仓。撤单失败不阻断。
+    cancel_algo_orders_for_position(
+        str(strategy.get("inst_id") or ""), position_direction(position), int(strategy.get("id") or 0)
+    )
+    close_result = close_position_for_environment("simulated", close_request, origin=ORDER_ORIGIN_AUTOMATION)
     return {
         "ok": True,
         "action": signal.get("action"),
@@ -7943,7 +9354,7 @@ def execute_automation_open_order(strategy: dict[str, Any], signal: dict[str, An
         px=signal.get("price") if strategy["ord_type"] in ORDER_TYPES_WITH_PRICE else None,
         reduceOnly=False,
     )
-    return place_order_for_environment("simulated", order)
+    return place_order_for_environment("simulated", order, origin=ORDER_ORIGIN_AUTOMATION)
 
 
 def automation_signal_for_candle(
@@ -8154,35 +9565,103 @@ def llm_account_payload_for_signal() -> dict[str, Any]:
 
 
 def evaluate_automation_strategy(strategy: dict[str, Any], force: bool = False) -> dict[str, Any] | None:
+    """兼容旧签名的单结果入口；多合约完整结果用 evaluate_automation_strategy_all。"""
+    results = evaluate_automation_strategy_all(strategy, force=force)
+    return results[0] if results else None
+
+
+def evaluate_automation_strategy_all(strategy: dict[str, Any], force: bool = False) -> list[dict[str, Any]]:
+    """按策略隔离的互斥入口：后台轮询、手动 run、单策略 run 共用同一把锁。
+
+    一条策略可绑定多个合约，每个合约独立生成信号、独立风控、独立下单；
+    K 线去重状态按合约记录；账户、全局状态与 LLM 配置在同一轮内共享快照。
+    """
+    strategy_id = int(strategy.get("id") or 0)
+    results: list[dict[str, Any]] = []
+    with automation_execution_guard.strategy_lock(strategy_id):
+        eval_map = automation_eval_map(strategy_id)
+        context = EvaluationContext()
+        for inst_id in strategy_inst_ids(strategy):
+            scoped = {**strategy, "inst_id": inst_id}
+            try:
+                result = _evaluate_automation_strategy_locked(
+                    scoped, force=force, eval_map=eval_map, context=context
+                )
+                if result:
+                    results.append(result)
+            except Exception as exc:
+                logger.exception("策略 %s 合约 %s 运行异常", strategy_id, inst_id)
+                trigger_automation_circuit_breaker(str(exc), strategy_id=strategy_id)
+                failed_signal = {
+                    "action": "hold",
+                    "side": None,
+                    "pos_side": None,
+                    "price": None,
+                    "candle_ts": 0,
+                    "reason": f"策略运行异常：{exc}",
+                }
+                results.append(record_automation_signal(scoped, failed_signal, "failed", str(exc), {}))
+    return results
+
+
+def _evaluate_automation_strategy_locked(
+    strategy: dict[str, Any],
+    force: bool = False,
+    eval_map: dict[str, int] | None = None,
+    context: EvaluationContext | None = None,
+) -> dict[str, Any] | None:
     if not force and not bool(strategy.get("enabled")):
         return None
     if bool(strategy.get("archived")):
         return None
 
+    inst_id = str(strategy.get("inst_id") or "").upper()
+    strategy_id = int(strategy.get("id") or 0)
+    # 单合约策略沿用历史幂等键格式，避免升级后已有 committed 记录失效；
+    # 多合约策略才把合约维度纳入键，防止同一根 K 线跨合约互相误拦。
+    key_inst_id = inst_id if len(strategy_inst_ids(strategy)) > 1 else ""
+    if eval_map is None:
+        eval_map = automation_eval_map(strategy_id)
+    context = context or EvaluationContext()
     if str(strategy.get("execution_mode") or "") == "simulated_auto" and settings.has_credentials_for_environment("simulated"):
-        try:
-            exit_signal = automation_exit_signal(strategy, refresh_account_cache_sync("simulated"))
-        except Exception:
+        account_payload, account_error = context.account(refresh_account_cache_sync)
+        if account_error is not None:
+            logger.warning("策略 %s 止盈止损本轮跳过：虚拟盘账户读取失败 %s", strategy.get("id"), account_error)
             exit_signal = None
+        else:
+            exit_signal = automation_exit_signal(strategy, account_payload or {})
         if exit_signal:
-            preview = automation_risk_preview(strategy, exit_signal)
+            preview = automation_risk_preview(strategy, exit_signal, context=context)
             global_block = automation_global_block_check(strategy, exit_signal)
-            if global_block:
-                return record_automation_signal(
-                    strategy,
-                    exit_signal,
-                    "blocked",
-                    str(global_block.get("message") or preview.get("message") or "自动交易已被全局状态拦截。"),
-                    {"risk_snapshot": preview},
-                )
+            if global_block or not preview["allowed"]:
+                reason = str((global_block or {}).get("message") or preview.get("message") or "止盈止损平仓被风控拦截。")
+                logger.info("策略 %s 止盈止损被风控拦截：%s", strategy.get("id"), reason)
+                return record_automation_signal(strategy, exit_signal, "blocked", reason, {"risk_snapshot": preview})
+
+            exit_execution_id = execution_key(
+                strategy.get("id"),
+                exit_signal.get("action"),
+                exit_signal.get("candle_ts"),
+                exit_signal.get("side"),
+                exit_signal.get("pos_side"),
+                key_inst_id,
+            )
+            claimed, claim_reason = automation_execution_guard.try_claim(exit_execution_id)
+            if not claimed:
+                logger.info("策略 %s 止盈止损重复触发被拦截：%s", strategy.get("id"), claim_reason)
+                return record_automation_signal(strategy, exit_signal, "skipped", claim_reason, {"risk_snapshot": preview})
             try:
                 exit_result = execute_automation_exit(strategy, exit_signal)
             except HTTPException as exc:
+                automation_execution_guard.release(exit_execution_id)
                 trigger_automation_circuit_breaker(str(exc.detail), strategy_id=int(strategy["id"]))
                 return record_automation_signal(strategy, exit_signal, "failed", str(exc.detail), {"risk_snapshot": preview})
             except Exception as exc:
+                automation_execution_guard.release(exit_execution_id)
+                logger.exception("策略 %s 止盈止损平仓异常", strategy.get("id"))
                 trigger_automation_circuit_breaker(str(exc), strategy_id=int(strategy["id"]))
                 return record_automation_signal(strategy, exit_signal, "failed", str(exc), {"risk_snapshot": preview})
+            automation_execution_guard.commit(exit_execution_id)
             return record_automation_signal(
                 strategy,
                 exit_signal,
@@ -8194,7 +9673,7 @@ def evaluate_automation_strategy(strategy: dict[str, Any], force: bool = False) 
     if strategy["template"] == "llm_direct":
         candles = closed_strategy_candles(str(strategy["inst_id"]), str(strategy["bar"]), AUTOMATION_LLM_LOOKBACK_CANDLES)
         candle_ts = int(candles[-1].get("ts") or 0) if candles else 0
-        if candle_ts and not force and int(strategy.get("last_eval_ts") or 0) >= candle_ts:
+        if candle_ts and not force and int(eval_map.get(inst_id) or strategy.get("last_eval_ts") or 0) >= candle_ts:
             return None
         if len(candles) < min(30, AUTOMATION_LLM_LOOKBACK_CANDLES):
             signal = {
@@ -8221,11 +9700,11 @@ def evaluate_automation_strategy(strategy: dict[str, Any], force: bool = False) 
         }
 
     candle_ts = int(signal.get("candle_ts") or 0)
-    if candle_ts and not force and int(strategy.get("last_eval_ts") or 0) >= candle_ts:
+    if candle_ts and not force and int(eval_map.get(inst_id) or strategy.get("last_eval_ts") or 0) >= candle_ts:
         return None
 
     if candle_ts:
-        database.set_automation_strategy_last_eval(int(strategy["id"]), candle_ts, now_ms())
+        automation_mark_eval(strategy_id, inst_id, candle_ts, eval_map)
 
     global_block = automation_global_block_check(strategy, signal)
     if global_block and signal.get("action") in {"long", "short"}:
@@ -8258,13 +9737,46 @@ def evaluate_automation_strategy(strategy: dict[str, Any], force: bool = False) 
             {"risk_snapshot": automation_risk_preview(strategy, signal)},
         )
 
-    preview = automation_risk_preview(strategy, signal)
+    preview = automation_risk_preview(strategy, signal, context=context)
     if not preview["allowed"]:
         return record_automation_signal(strategy, signal, "blocked", str(preview.get("message") or "自动交易被风控拦截。"), {"risk_snapshot": preview})
 
+    order_execution_id = execution_key(
+        strategy.get("id"), signal.get("action"), candle_ts, signal.get("side"), signal.get("pos_side"), key_inst_id
+    )
+    claimed, claim_reason = automation_execution_guard.try_claim(order_execution_id)
+    if not claimed:
+        logger.info("策略 %s 重复执行被拦截：%s", strategy.get("id"), claim_reason)
+        return record_automation_signal(strategy, signal, "skipped", claim_reason, {"risk_snapshot": preview})
+
+    shared_account, _ = context.account(refresh_account_cache_sync)
     try:
-        order_result = execute_automation_order(strategy, signal)
+        order_result = execute_automation_order(
+            strategy,
+            signal,
+            account_payload=shared_account,
+            execution_id=order_execution_id,
+        )
+    except AutomationExecutionError as exc:
+        automation_execution_guard.release(order_execution_id)
+        logger.error("策略 %s 反向开仓失败，需人工补偿：%s", strategy.get("id"), exc)
+        trigger_automation_circuit_breaker(str(exc), strategy_id=int(strategy["id"]))
+        create_automation_alert(
+            "critical",
+            "execution_compensation",
+            str(exc),
+            strategy_id=int(strategy["id"]),
+            raw_payload={"steps": exc.steps, "compensation_required": True},
+        )
+        return record_automation_signal(
+            strategy,
+            signal,
+            "failed",
+            str(exc),
+            {"risk_snapshot": preview, "execution_steps": exc.steps, "compensation_required": True},
+        )
     except HTTPException as exc:
+        automation_execution_guard.release(order_execution_id)
         trigger_automation_circuit_breaker(str(exc.detail), strategy_id=int(strategy["id"]))
         return record_automation_signal(
             strategy,
@@ -8274,6 +9786,8 @@ def evaluate_automation_strategy(strategy: dict[str, Any], force: bool = False) 
             {"risk_snapshot": preview},
         )
     except Exception as exc:
+        automation_execution_guard.release(order_execution_id)
+        logger.exception("策略 %s 自动下单异常", strategy.get("id"))
         trigger_automation_circuit_breaker(str(exc), strategy_id=int(strategy["id"]))
         return record_automation_signal(
             strategy,
@@ -8282,6 +9796,7 @@ def evaluate_automation_strategy(strategy: dict[str, Any], force: bool = False) 
             str(exc),
             {"risk_snapshot": preview},
         )
+    automation_execution_guard.commit(order_execution_id)
 
     if order_result.get("action") == "skip_same_direction":
         return record_automation_signal(
@@ -8312,10 +9827,9 @@ def run_automation_once(force: bool = False) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for strategy in list_automation_strategies_safe(include_archived=False):
         try:
-            result = evaluate_automation_strategy(strategy, force=force)
-            if result:
-                results.append(result)
+            results.extend(evaluate_automation_strategy_all(strategy, force=force))
         except Exception as exc:
+            logger.exception("自动化策略 %s 运行异常", strategy.get("id"))
             signal = {
                 "action": "hold",
                 "side": None,
@@ -8511,6 +10025,7 @@ def automation_loop() -> None:
         try:
             run_automation_once(force=False)
         except Exception as exc:
+            logger.exception("自动化轮询异常")
             with automation_state_lock:
                 automation_state["warning"] = str(exc)
                 automation_state["lastRunAt"] = now_ms()
@@ -8850,6 +10365,216 @@ def cached_platform_24_volume() -> dict[str, Any]:
     return platform_24_volume_response(now_ms())
 
 
+def volume_history_instrument_universe() -> tuple[list[str], float, int]:
+    """Pick the most active USDT/USDC-settled swaps by real 24h quote turnover.
+
+    Returns (inst_ids, coverage_pct, universe_size). Using a fixed, clearly
+    documented universe keeps every period comparable instead of silently
+    changing the sample as rankings move.
+    """
+    ticker_rows = cached_tickers().get("data") or []
+    instruments = database.list_instruments(query="", limit=2000)
+    settle_by_id = {
+        str(row.get("inst_id") or "").upper(): str(row.get("settle_ccy") or "").upper()
+        for row in instruments
+    }
+    scored: list[tuple[str, Decimal]] = []
+    universe_total = Decimal("0")
+    for ticker in ticker_rows:
+        inst_id = str(ticker.get("instId") or "").upper()
+        if not inst_id.endswith("-SWAP") or "TEST" in inst_id:
+            continue
+        settle = settle_by_id.get(inst_id, "")
+        if settle not in {"USDT", "USDC"}:
+            continue
+        liquidity = radar_liquidity(ticker, settle)
+        value = liquidity.get("value")
+        if not isinstance(value, Decimal) or value <= 0 or not liquidity.get("comparable"):
+            continue
+        universe_total += value
+        scored.append((inst_id, value))
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    selected = scored[:VOLUME_HISTORY_TOP_N]
+    selected_total = sum((value for _, value in selected), Decimal("0"))
+    coverage = float(selected_total / universe_total * 100) if universe_total > 0 else 0.0
+    return [inst_id for inst_id, _ in selected], coverage, len(scored)
+
+
+def volume_history_candles(inst_id: str) -> list[dict[str, str]]:
+    recent = client.get_candles(inst_id, VOLUME_HISTORY_BAR, VOLUME_HISTORY_RECENT_LIMIT)
+    if not recent:
+        return []
+    combined = {str(row["ts"]): row for row in recent}
+    oldest_ts = min(int(row["ts"]) for row in recent)
+    try:
+        older = client.get_history_candles(
+            inst_id, VOLUME_HISTORY_BAR, VOLUME_HISTORY_EXTENSION_LIMIT, after=str(oldest_ts)
+        )
+        for row in older:
+            combined.setdefault(str(row["ts"]), row)
+    except (OkxError, ValueError, TypeError, KeyError) as exc:
+        logger.warning("Volume history extension failed for %s: %s", inst_id, exc)
+    return [combined[key] for key in sorted(combined, key=int)]
+
+
+def volume_history_day_label(ts: int) -> str:
+    return datetime.fromtimestamp(ts / 1000, tz=ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+
+
+def build_volume_history_snapshot() -> dict[str, Any]:
+    inst_ids, coverage, universe_size = volume_history_instrument_universe()
+    if len(inst_ids) < 8:
+        raise ValueError("Not enough active USDT-settled swaps to build volume history")
+    daily: dict[str, dict[str, Any]] = {}
+    failures = 0
+    with ThreadPoolExecutor(max_workers=min(VOLUME_HISTORY_MAX_WORKERS, len(inst_ids))) as executor:
+        pending = {inst_id: executor.submit(volume_history_candles, inst_id) for inst_id in inst_ids}
+        for inst_id, future in pending.items():
+            try:
+                rows = future.result()
+            except (OkxError, ValueError, TypeError, KeyError) as exc:
+                failures += 1
+                logger.warning("Volume history candles failed for %s: %s", inst_id, exc)
+                continue
+            if not rows:
+                failures += 1
+                continue
+            for row in rows:
+                quote = safe_decimal(row.get("volumeQuote"))
+                if quote is None or quote <= 0:
+                    continue
+                try:
+                    ts = int(row["ts"])
+                except (TypeError, ValueError):
+                    continue
+                bucket = daily.setdefault(volume_history_day_label(ts), {"ts": ts, "value": Decimal("0"), "count": 0, "confirm": "1"})
+                bucket["value"] += quote
+                bucket["count"] += 1
+                if str(row.get("confirm") or "1") != "1":
+                    bucket["confirm"] = "0"
+    successful = len(inst_ids) - failures
+    if successful < 8 or not daily:
+        raise ValueError("OKX daily candles are unavailable for volume history")
+    points = [
+        {
+            "date": date,
+            "ts": daily[date]["ts"],
+            "volUsd": decimal_display(daily[date]["value"]),
+            "count": daily[date]["count"],
+            "confirm": daily[date]["confirm"],
+        }
+        for date in sorted(daily)
+    ]
+    return {
+        "daily": points,
+        "instrumentCount": successful,
+        "requestedCount": len(inst_ids),
+        "universeCount": universe_size,
+        "coveragePct": round(coverage, 1),
+        "startDate": points[0]["date"],
+        "endDate": points[-1]["date"],
+        "quoteCurrency": "USD",
+        "source": "okx-1d-candles-volumeQuote",
+    }
+
+
+def save_volume_history_snapshot(snapshot: dict[str, Any], ts: int) -> None:
+    database.set_app_setting(
+        VOLUME_HISTORY_SNAPSHOT_KEY,
+        json.dumps({"ts": ts, "data": snapshot}, ensure_ascii=False, separators=(",", ":")),
+        ts,
+    )
+    with volume_history_cache_lock:
+        volume_history_cache["snapshot"] = snapshot
+        volume_history_cache["receivedAt"] = ts
+
+
+def load_volume_history_snapshot() -> dict[str, Any] | None:
+    with volume_history_cache_lock:
+        snapshot = volume_history_cache.get("snapshot")
+        if isinstance(snapshot, dict) and snapshot.get("daily"):
+            return snapshot
+    raw = database.get_app_setting(VOLUME_HISTORY_SNAPSHOT_KEY)
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    snapshot = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(snapshot, dict) or not snapshot.get("daily"):
+        return None
+    with volume_history_cache_lock:
+        volume_history_cache["snapshot"] = snapshot
+        volume_history_cache["receivedAt"] = coerce_int(payload.get("ts"), 0, 0, 9_999_999_999_999)
+    return snapshot
+
+
+def refresh_volume_history_background() -> None:
+    try:
+        snapshot = build_volume_history_snapshot()
+        save_volume_history_snapshot(snapshot, now_ms())
+        with volume_history_cache_lock:
+            volume_history_cache["nextRetryAt"] = 0
+    except (OkxError, ValueError, TypeError, KeyError) as exc:
+        logger.warning("Volume history refresh failed: %s", exc)
+        with volume_history_cache_lock:
+            volume_history_cache["nextRetryAt"] = now_ms() + VOLUME_HISTORY_RETRY_MS
+    finally:
+        with volume_history_cache_lock:
+            volume_history_cache["refreshing"] = False
+
+
+def start_volume_history_refresh() -> bool:
+    with volume_history_cache_lock:
+        if volume_history_cache["refreshing"] or int(volume_history_cache["nextRetryAt"]) > now_ms():
+            return False
+        volume_history_cache["refreshing"] = True
+    Thread(target=refresh_volume_history_background, name="volume-history-refresh", daemon=True).start()
+    return True
+
+
+def volume_history_response(now: int) -> dict[str, Any]:
+    snapshot = load_volume_history_snapshot()
+    with volume_history_cache_lock:
+        received_at = int(volume_history_cache.get("receivedAt") or 0)
+        refreshing = bool(volume_history_cache.get("refreshing"))
+        retrying = int(volume_history_cache.get("nextRetryAt") or 0) > now
+    age = max(0, now - received_at) if snapshot else None
+    usable = snapshot is not None and age is not None and age <= VOLUME_HISTORY_MAX_AGE_MS
+    if usable and not refreshing and not retrying and age <= VOLUME_HISTORY_CACHE_MS:
+        state, message = "fresh", "成交额历史序列已更新。"
+    elif usable:
+        state, message = "cached", "成交额历史序列正在更新或暂时失败，已显示最近快照。"
+    elif refreshing:
+        state, message = "loading", "正在读取 OKX 日线成交额，首次加载约需十余秒。"
+    else:
+        state, message = "unavailable", "成交额历史序列暂不可用，请稍后重试。"
+    return {
+        "data": snapshot if usable else None,
+        "state": state,
+        "message": message,
+        "source": "okx-1d-candles" if state == "fresh" else "okx-cache" if usable else "okx-unavailable",
+        "cacheAgeMs": age if usable else None,
+        "ts": received_at if usable else None,
+    }
+
+
+def cached_volume_history(force: bool = False) -> dict[str, Any]:
+    now = now_ms()
+    with volume_history_cache_lock:
+        received_at = int(volume_history_cache.get("receivedAt") or 0)
+        has_snapshot = bool(volume_history_cache.get("snapshot"))
+    if not has_snapshot:
+        load_volume_history_snapshot()
+        with volume_history_cache_lock:
+            received_at = int(volume_history_cache.get("receivedAt") or 0)
+    stale = force or not has_snapshot or now - received_at > VOLUME_HISTORY_CACHE_MS
+    if stale:
+        start_volume_history_refresh()
+    return volume_history_response(now)
+
+
 def warm_ticker_cache() -> None:
     start_ticker_refresh()
 
@@ -9143,11 +10868,21 @@ def cached_account(force: bool = False) -> dict:
     return account_unavailable_response(environment, now_ms(), refreshing, failures, next_retry_at)
 
 
+def warm_volume_history() -> None:
+    # Give the ticker cache a head start before selecting the instrument universe.
+    time.sleep(3)
+    start_volume_history_refresh()
+
+
 @app.on_event("startup")
 def startup() -> None:
     database.init()
+    backfill_automation_order_origins()
     load_persisted_trading_environment()
+    # P2-2：对账本地算法单记录与 OKX 实际挂单，标记孤儿单（开关关闭时为空操作）。
+    reconcile_algo_orders_on_startup()
     Thread(target=warm_ticker_cache, daemon=True).start()
+    Thread(target=warm_volume_history, daemon=True).start()
     Thread(target=automation_loop, daemon=True).start()
     Thread(target=market_ai_sample_verification_loop, daemon=True).start()
 
@@ -9313,7 +11048,7 @@ def refresh_instruments() -> dict:
 @app.get("/api/instruments")
 def instruments(
     query: Annotated[str, Query(max_length=80)] = "",
-    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 200,
 ) -> dict:
     rows = database.list_instruments(query=query, limit=limit)
     if not rows:
@@ -9399,6 +11134,19 @@ def tickers(force: Annotated[bool, Query()] = False) -> dict:
 @app.get("/api/market/overview/volume")
 def market_overview_volume() -> dict:
     return cached_platform_24_volume()
+
+
+@app.get("/api/market/overview/volume-history")
+def market_overview_volume_history(
+    force: Annotated[bool, Query()] = False,
+) -> dict:
+    """Daily OKX swap turnover (USD) built from real 1D candle volumeQuote.
+
+    The official platform-24-volume endpoint only exposes a rolling 24h point,
+    so week/month/year totals must be summed from daily candles. Never
+    extrapolate a 24h figure by multiplying it by a number of days.
+    """
+    return cached_volume_history(force=force)
 
 
 @app.get("/api/market/order-book")
@@ -9626,6 +11374,116 @@ def automation_status() -> dict:
     return automation_status_payload()
 
 
+def automation_equity_snapshot(force: bool = False) -> tuple[dict[str, Any], str]:
+    """读取模拟盘账户快照。与风控预览共用 refresh_account_cache_sync("simulated")。
+
+    缓存未过期时直接复用，避免表单每次输入都同步请求 OKX；刷新失败时回退
+    到最近一次完整快照，仍读不到则返回不可读，由接口明确告知前端。
+    """
+    environment = "simulated"
+    cached, cached_ts, _refreshing, _failures, _retry_at = account_cache_values(environment)
+    max_age_ms = max(0, int(settings.account_cache_seconds * 1000))
+    if cached and cached_ts and not force and now_ms() - cached_ts <= max_age_ms:
+        return account_snapshot_response(environment, cached, now_ms()), "cache"
+    try:
+        return refresh_account_cache_sync(environment), "okx"
+    except Exception as exc:
+        logger.warning("模拟盘账户权益读取失败，尝试回退缓存: %s", exc)
+        fallback = account_fallback_response(environment, str(exc))
+        if fallback:
+            return fallback, "cache"
+        return {
+            "environment": environment,
+            "summary": {},
+            "positions": [],
+            "source": "error",
+            "ts": 0,
+            "warning": str(exc),
+        }, "error"
+
+
+@app.get("/api/automation/equity")
+def automation_equity(
+    dailyPositionPct: Annotated[str, Query(max_length=40)] = "0",
+    strategyId: Annotated[int, Query(ge=0)] = 0,
+    force: Annotated[bool, Query()] = False,
+) -> dict:
+    """策略表单回显模拟盘账户金额与每日开仓额度，口径与风控闸门完全一致。"""
+    pct = safe_decimal(str(dailyPositionPct or "").strip())
+    pct_invalid = pct is None or pct < 0 or pct > Decimal("100")
+    if pct_invalid:
+        pct = Decimal("0")
+
+    day_start = daily_start_ms()
+    result: dict[str, Any] = {
+        "environment": "simulated",
+        "configured": True,
+        "available": False,
+        "currency": "USDT",
+        "totalEq": "",
+        "availEq": "",
+        "equity": "",
+        "equityBasis": "",
+        "dailyPositionPct": decimal_display(pct),
+        "pctInvalid": pct_invalid,
+        "dailyLimit": "",
+        "dailyUsed": "",
+        "dailyUsedAvailable": False,
+        "dailyRemaining": "",
+        "dailyDayStart": day_start,
+        "dailyResetAt": day_start + 86_400_000,
+        "source": "",
+        "snapshotTs": 0,
+        "updatedAt": now_ms(),
+        "warning": "",
+        "message": "",
+    }
+
+    if not settings.has_credentials_for_environment("simulated"):
+        result["configured"] = False
+        result["source"] = "not-configured"
+        result["message"] = "模拟盘 API Key 未配置，无法读取账户金额；启用每日仓位% 时自动开仓会被风控拦截。"
+        return {"ok": True, "data": result}
+
+    account, source = automation_equity_snapshot(force=force)
+    summary = account.get("summary") if isinstance(account.get("summary"), dict) else {}
+    total_eq = safe_decimal(summary.get("totalEq"))
+    avail_eq = safe_decimal(summary.get("availEq"))
+    equity = account_equity(account)
+    basis = ""
+    if equity is not None:
+        for key in ("totalEq", "eqUsd", "availEq", "availBal"):
+            value = safe_decimal(summary.get(key))
+            if value is not None and value > 0:
+                basis = key
+                break
+
+    used = automation_daily_used_notional(int(strategyId or 0), day_start)
+    used_available = used is not None
+    limit = equity * pct / Decimal("100") if equity is not None else None
+
+    result.update(
+        {
+            "available": equity is not None,
+            "totalEq": usd_display(total_eq) if total_eq is not None else "",
+            "availEq": usd_display(avail_eq) if avail_eq is not None else "",
+            "equity": usd_display(equity) if equity is not None else "",
+            "equityBasis": basis,
+            "dailyLimit": usd_display(limit) if limit is not None else "",
+            "dailyUsed": usd_display(used) if used_available else "",
+            "dailyUsedAvailable": used_available,
+            "dailyRemaining": usd_display(max(Decimal("0"), limit - used)) if limit is not None and used_available else "",
+            "source": str(account.get("source") or source),
+            "snapshotTs": int(account.get("ts") or 0),
+            "warning": str(account.get("warning") or ""),
+            "message": "" if equity is not None else "无法读取模拟盘账户权益，启用每日仓位% 后自动开仓会被风控拦截。",
+        }
+    )
+    if equity is not None and not used_available:
+        result["warning"] = "当日已用额度读取失败，风控会拦截自动开仓。" + str(result["warning"] or "")
+    return {"ok": True, "data": result}
+
+
 @app.get("/api/automation/strategies")
 def automation_strategies(includeArchived: Annotated[bool, Query()] = False) -> dict:
     return {"data": [strategy_response(item) for item in list_automation_strategies_safe(include_archived=includeArchived)]}
@@ -9747,6 +11605,8 @@ def archive_automation_strategy(strategy_id: int, payload: AutomationArchiveRequ
     row = database.update_automation_strategy(strategy_id, updated)
     if not row:
         raise HTTPException(status_code=404, detail="策略不存在。")
+    # P2-2：归档策略时按策略维度撤销全部合约的残留算法单，避免多合约策略留下无人管理的孤儿挂单。
+    cancel_algo_orders_for_position("", strategy_id=strategy_id)
     data = strategy_response(row)
     broadcast_realtime_event(
         {"type": "automation.status", "topic": "automation.status", "source": "automation", "data": data, "refreshRequired": True},
@@ -9784,8 +11644,9 @@ def run_automation_strategy(strategy_id: int) -> dict:
         raise HTTPException(status_code=404, detail="策略不存在。")
     if bool(strategy.get("archived")):
         raise HTTPException(status_code=400, detail="已归档策略请先恢复后再运行。")
-    result = evaluate_automation_strategy(strategy, force=True)
-    return {"ok": True, "data": result}
+    results = evaluate_automation_strategy_all(strategy, force=True)
+    # data 保留单条结构以兼容既有前端判断；results 给出多合约的全部记录。
+    return {"ok": True, "data": results[0] if results else None, "results": results}
 
 
 @app.post("/api/automation/preview")
@@ -10025,6 +11886,52 @@ def invalidate_order_cache(environment: str, inst_id: str) -> None:
         order_cache.pop(order_cache_key(environment, ""), None)
 
 
+def settlement_bills_index(environment: str, force: bool = False) -> dict[str, dict[str, Any]]:
+    """读取 OKX 交易账单并按订单号建结算盈亏索引。
+
+    - 已结算流水不可变，缓存 SETTLEMENT_CACHE_MS；过期但未超 STALE 时仍用旧值，
+      避免翻页/刷新时反复打 OKX 私密接口。
+    - 任何失败都降级为空索引（调用方保留原有估算盈亏），绝不阻断订单列表。
+    """
+    environment = normalize_trading_environment(environment)
+    if not settings.has_credentials_for_environment(environment):
+        return {}
+    now = now_ms()
+    with settlement_cache_lock:
+        cached = dict(settlement_cache.get(environment) or {})
+    cached_ts = int(cached.get("ts") or 0)
+    age_ms = now - cached_ts if cached_ts else None
+    if not force and cached.get("index") is not None and age_ms is not None and age_ms <= SETTLEMENT_CACHE_MS:
+        return cached["index"]
+
+    try:
+        # 翻页拉取全部成交账单：单页 100 条会漏掉百笔以上账户的历史结算盈亏。
+        env_client = client_for_environment(environment)
+        if hasattr(env_client, "get_all_trade_bills"):
+            bills = env_client.get_all_trade_bills(bill_type="2", limit=100)
+        else:
+            bills = env_client.get_trade_bills(bill_type="2", limit=100)
+        index = order_pnl.index_bills_by_order(bills)
+        with settlement_cache_lock:
+            settlement_cache[environment] = {"ts": now, "index": index, "billCount": len(bills)}
+        return index
+    except OkxError as exc:
+        logger.warning("OKX 账单结算盈亏读取失败，订单盈亏沿用估算值。", exc_info=True)
+        if cached.get("index") is not None and age_ms is not None and age_ms <= SETTLEMENT_STALE_MS:
+            return cached["index"]
+        return {}
+    except Exception:
+        logger.warning("OKX 账单结算盈亏处理异常，订单盈亏沿用估算值。", exc_info=True)
+        if cached.get("index") is not None and age_ms is not None and age_ms <= SETTLEMENT_STALE_MS:
+            return cached["index"]
+        return {}
+
+
+def invalidate_settlement_cache(environment: str) -> None:
+    with settlement_cache_lock:
+        settlement_cache.pop(normalize_trading_environment(environment), None)
+
+
 def refresh_candles_background(inst_id: str, bar: str, limit: int) -> None:
     key = (inst_id, bar)
     try:
@@ -10054,12 +11961,16 @@ def orders_for_environment(
     q: str = "",
     action: str = "",
     state: str = "",
+    origin: str = "",
 ) -> dict:
     environment = normalize_trading_environment(environment)
     inst_id = instId.strip().upper()
     keyword = q.strip()
     action_filter = action.strip()
     state_filter = state.strip()
+    origin_filter = origin.strip().lower()
+    if origin_filter not in ORDER_ORIGINS:
+        origin_filter = ""
     has_credentials = settings.has_credentials_for_environment(environment)
     local_events = database.list_sim_order_events(
         environment=environment,
@@ -10069,6 +11980,7 @@ def orders_for_environment(
         keyword=keyword,
         action=action_filter,
         state=state_filter,
+        origin=origin_filter,
     )
     total = database.count_sim_order_events(
         environment=environment,
@@ -10076,7 +11988,71 @@ def orders_for_environment(
         keyword=keyword,
         action=action_filter,
         state=state_filter,
+        origin=origin_filter,
     )
+    origin_counts = {ORDER_ORIGIN_MANUAL: 0, ORDER_ORIGIN_AUTOMATION: 0}
+    try:
+        rows = database.sim_order_event_origin_counts(
+            environment=environment,
+            inst_id=inst_id,
+            keyword=keyword,
+            action=action_filter,
+            state=state_filter,
+        )
+        origin_counts.update({key: int(value) for key, value in rows.items() if key in ORDER_ORIGINS})
+    except Exception:
+        logger.warning("订单来源计数读取失败，本次不展示来源条数。", exc_info=True)
+    origin_counts["all"] = sum(origin_counts[key] for key in ORDER_ORIGINS)
+    pnl_links: dict[str, dict[str, Any]] = {}
+    signal_rows: list[dict[str, Any]] = []
+    try:
+        if hasattr(database, "list_automation_signals"):
+            signal_rows = database.list_automation_signals(limit=500)
+            pnl_links = order_pnl.signal_pnl_links(signal_rows)
+    except Exception:
+        logger.warning("订单盈亏回填失败，本次仅显示已落库的盈亏。", exc_info=True)
+    snapshot_rows: list[dict[str, Any]] = []
+    try:
+        if hasattr(database, "position_snapshot_rows_between") and local_events:
+            timestamps = [int(event.get("ts") or 0) for event in local_events]
+            snapshot_rows = database.position_snapshot_rows_between(
+                environment,
+                min(timestamps) - order_pnl.SNAPSHOT_WINDOW_MS,
+                max(timestamps),
+            )
+    except Exception:
+        logger.warning("历史持仓快照读取失败，部分平仓单无法显示盈亏。", exc_info=True)
+    pnl_summary = order_pnl.attach_order_pnl(local_events, pnl_links, snapshot_rows)
+    # 平仓单补充「平的是哪个策略的仓位」：手动平掉自动化开的仓时，来源仍是手动，
+    # 但需要看得出这笔平仓对应哪条策略，否则界面只剩「手动」两个字。
+    try:
+        order_pnl.close_strategy_attribution(local_events, signal_rows)
+    except Exception:
+        logger.warning("平仓归属策略回填失败，本次不展示平仓所属策略。", exc_info=True)
+    # 来源归一：能对上自动化信号的订单一定是策略提交的，避免历史空值/回填遗漏
+    # 把自动化单错显成手动单；其余一律按手动。
+    for event in local_events:
+        if not isinstance(event, dict):
+            continue
+        key = str(event.get("cl_ord_id") or event.get("ord_id") or "").strip()
+        if key and key in pnl_links:
+            event["origin"] = ORDER_ORIGIN_AUTOMATION
+        elif str(event.get("origin") or "").strip() not in ORDER_ORIGINS:
+            event["origin"] = ORDER_ORIGIN_MANUAL
+    # 用 OKX 已结算账单（含手续费）覆盖平仓单的浮动盈亏估算；失败时保留估算值。
+    # 只对有凭证的环境尝试，且只处理本页平仓单，不额外增加翻页请求。
+    if has_credentials and any(
+        str(event.get("action") or "") in order_pnl.CLOSE_ACTIONS and str(event.get("state") or "") != "failed"
+        for event in local_events
+        if isinstance(event, dict)
+    ):
+        try:
+            bills_index = settlement_bills_index(environment)
+            if bills_index:
+                settled_summary = order_pnl.apply_settled_pnl(local_events, bills_index)
+                pnl_summary.update(settled_summary)
+        except Exception:
+            logger.warning("账单结算盈亏应用失败，订单盈亏沿用估算值。", exc_info=True)
     page = (offset // limit) + 1
     page_count = max((total + limit - 1) // limit, 1)
     payload: dict[str, Any] = {
@@ -10096,6 +12072,9 @@ def orders_for_environment(
             "pageCount": page_count,
         },
         "source": "local",
+        "origin": origin_filter,
+        "originCounts": origin_counts,
+        "pnlSummary": pnl_summary,
         "ts": now_ms(),
     }
     if not has_credentials:
@@ -10117,10 +12096,18 @@ def orders_for_environment(
     return payload
 
 
-def place_order_for_environment(environment: str, order: PlaceSimOrderRequest) -> dict:
+def place_order_for_environment(
+    environment: str,
+    order: PlaceSimOrderRequest,
+    cl_ord_id: str | None = None,
+    origin: str = ORDER_ORIGIN_MANUAL,
+) -> dict:
     environment = normalize_trading_environment(environment)
     require_trading_enabled(environment)
-    request_payload = build_place_order_payload(order)
+    request_payload = build_place_order_payload(order, cl_ord_id=cl_ord_id)
+    # 服务端规格强校验：本地拦截不满足 lot/tick/名义价值的订单，避免脏数据打到 OKX。
+    # 规格缓存缺失时 resolve_instrument_spec 返回 None，校验降级放行。
+    validate_order_spec(request_payload, resolve_instrument_spec(str(request_payload.get("instId") or "")))
     try:
         response = client_for_environment(environment).place_order(request_payload)
     except OkxError as exc:
@@ -10131,12 +12118,12 @@ def place_order_for_environment(environment: str, order: PlaceSimOrderRequest) -
                 request_payload = retry_payload
             except OkxError as retry_exc:
                 error_payload = retry_exc.payload or {"code": "okx-error", "msg": str(retry_exc), "data": []}
-                event = sim_order_event(environment, "place", retry_payload, error_payload, "failed")
+                event = sim_order_event(environment, "place", retry_payload, error_payload, "failed", origin=origin)
                 invalidate_order_cache(environment, str(retry_payload.get("instId", "")))
                 raise HTTPException(status_code=502, detail=order_error_detail(event, str(retry_exc))) from retry_exc
         else:
             error_payload = exc.payload or {"code": "okx-error", "msg": str(exc), "data": []}
-            event = sim_order_event(environment, "place", request_payload, error_payload, "failed")
+            event = sim_order_event(environment, "place", request_payload, error_payload, "failed", origin=origin)
             invalidate_order_cache(environment, str(request_payload.get("instId", "")))
             raise HTTPException(status_code=502, detail=order_error_detail(event, str(exc))) from exc
 
@@ -10146,6 +12133,7 @@ def place_order_for_environment(environment: str, order: PlaceSimOrderRequest) -
         request_payload,
         response,
         "accepted" if response_successful(response) else "failed",
+        origin=origin,
     )
     invalidate_order_cache(environment, str(request_payload.get("instId", "")))
     if not success_code(event):
@@ -10161,11 +12149,35 @@ def place_order_for_environment(environment: str, order: PlaceSimOrderRequest) -
     }
 
 
-def close_position_for_environment(environment: str, order: ClosePositionRequest) -> dict:
+def close_pnl_for_request(environment: str, request_payload: dict[str, Any]) -> dict[str, str]:
+    """在平仓请求发出前取持仓浮动盈亏。任何读取失败都不能阻断平仓。
+
+    自动化止盈止损在同一轮评估里已刷新账户快照，手动平仓则使用最近一次
+    完整快照；两种来源都明确标记为快照值，不冒充交易所结算盈亏。
+    """
+    try:
+        account_payload, *_ = account_cache_values(environment)
+        if not account_payload:
+            account_payload = load_account_from_database(environment)
+        return order_pnl.derive_close_pnl(
+            account_payload,
+            str(request_payload.get("instId") or ""),
+            str(request_payload.get("posSide") or "net"),
+            cached=True,
+        )
+    except Exception:
+        logger.warning("平仓前持仓快照读取失败，本次订单不记录盈亏。", exc_info=True)
+        return {}
+
+
+def close_position_for_environment(
+    environment: str, order: ClosePositionRequest, origin: str = ORDER_ORIGIN_MANUAL
+) -> dict:
     environment = normalize_trading_environment(environment)
     require_trading_enabled(environment)
     request_payload = build_close_position_payload(order)
     inst_id = str(request_payload.get("instId", ""))
+    close_pnl = close_pnl_for_request(environment, request_payload)
     try:
         response = client_for_environment(environment).close_position(request_payload)
     except OkxError as exc:
@@ -10176,23 +12188,32 @@ def close_position_for_environment(environment: str, order: ClosePositionRequest
                 request_payload = retry_payload
             except OkxError as retry_exc:
                 error_payload = retry_exc.payload or {"code": "okx-error", "msg": str(retry_exc), "data": []}
-                event = sim_order_event(environment, "close-position", retry_payload, error_payload, "failed")
+                event = sim_order_event(
+                    environment, "close-position", retry_payload, error_payload, "failed", origin=origin
+                )
                 invalidate_order_cache(environment, inst_id)
                 raise HTTPException(status_code=502, detail=order_error_detail(event, str(retry_exc))) from retry_exc
         else:
             error_payload = exc.payload or {"code": "okx-error", "msg": str(exc), "data": []}
-            event = sim_order_event(environment, "close-position", request_payload, error_payload, "failed")
+            event = sim_order_event(
+                environment, "close-position", request_payload, error_payload, "failed", origin=origin
+            )
             invalidate_order_cache(environment, inst_id)
             raise HTTPException(status_code=502, detail=order_error_detail(event, str(exc))) from exc
 
+    close_state = "close_requested" if response_successful(response) else "failed"
     event = sim_order_event(
         environment,
         "close-position",
         request_payload,
         response,
-        "close_requested" if response_successful(response) else "failed",
+        close_state,
+        close_pnl=close_pnl if close_state != "failed" else None,
+        origin=origin,
     )
     invalidate_order_cache(environment, inst_id)
+    if close_state != "failed":
+        invalidate_settlement_cache(environment)
     with account_cache_condition:
         if account_cache.get("environment") == environment:
             reset_account_cache()
@@ -10328,6 +12349,7 @@ def trading_orders(
     q: Annotated[str, Query(max_length=128)] = "",
     action: Annotated[str, Query(max_length=32)] = "",
     state: Annotated[str, Query(max_length=32)] = "",
+    origin: Annotated[str, Query(max_length=16)] = "",
 ) -> dict:
     return orders_for_environment(
         current_trading_environment(),
@@ -10337,6 +12359,7 @@ def trading_orders(
         q=q,
         action=action,
         state=state,
+        origin=origin,
     )
 
 
@@ -10378,17 +12401,19 @@ def trading_leverage(
 
 @app.post("/api/trading/leverage")
 def update_trading_leverage(order: SetLeverageRequest) -> dict:
-    return set_leverage_for_environment(current_trading_environment(), order)
+    return set_leverage_for_environment(resolve_request_environment(order.environment), order)
 
 
 @app.post("/api/trading/orders")
 def place_trading_order(order: PlaceSimOrderRequest) -> dict:
-    return place_order_for_environment(current_trading_environment(), order)
+    return place_order_for_environment(
+        resolve_request_environment(order.environment), order, cl_ord_id=order.clOrdId
+    )
 
 
 @app.post("/api/trading/positions/close")
 def close_trading_position(order: ClosePositionRequest) -> dict:
-    return close_position_for_environment(current_trading_environment(), order)
+    return close_position_for_environment(resolve_request_environment(order.environment), order)
 
 
 @app.post("/api/trading/orders/local")
@@ -10398,7 +12423,7 @@ def place_local_trading_order(order: PlaceSimOrderRequest) -> dict:
 
 @app.post("/api/trading/orders/cancel")
 def cancel_trading_order(order: CancelSimOrderRequest) -> dict:
-    return cancel_order_for_environment(current_trading_environment(), order)
+    return cancel_order_for_environment(resolve_request_environment(order.environment), order)
 
 
 @app.get("/api/sim/orders")

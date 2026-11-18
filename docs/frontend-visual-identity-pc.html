@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="light" />
+<title>OKX 永续合约看板 · 前端视觉方案（PC 版）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+/* 令牌全部沿用 frontend/src/styles.css，未新增颜色 / 间距 / 圆角。
+   唯一新增：--type-display，仅用于「当前合约最新价」这一个展示级数字。
+   第二版只把已有间距令牌用得更疏朗（对齐轴 space-7、模块间距 space-5），未扩大令牌集合。
+   PC 版：画布放宽到 1440px，去掉窄屏重排，表格保留完整列。 */
+:root {
+  --color-bg: #eef3f8;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8fafc;
+  --color-border: #e1e8f0;
+  --color-border-strong: #d8e2ec;
+  --color-text: #17202a;
+  --color-text-soft: #425365;
+  --color-muted: #68788a;
+  --color-success: #0d9f65;
+  --color-success-strong: #087a4d;
+  --color-success-soft: #eaf8f1;
+  --color-danger: #b93042;
+  --color-danger-soft: #fff0f2;
+  --color-warning: #9b5d10;
+  --color-warning-soft: #fff8e8;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius-panel: 8px;
+  --radius-pill: 999px;
+  --shadow-card: 0 1px 2px rgba(35, 48, 67, 0.06);
+  --control-height-sm: 28px;
+  --control-height: 34px;
+  --control-height-lg: 40px;
+  --motion-fast: 120ms;
+  --motion-standard: 160ms;
+
+  --font-ui: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --type-display: 48px;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  padding: var(--space-6) var(--space-4) var(--space-7);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: var(--space-4);
+  top: -60px;
+  z-index: 30;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-panel);
+  color: var(--color-text);
+  text-decoration: none;
+}
+.skip-link:focus { top: var(--space-3); }
+
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--color-success-strong);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+button { font: inherit; color: inherit; cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+/* 一次编排好的入场，仅此一处；其余动效只回应人的动作。 */
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.ledger-sheet {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  animation: sheet-in 600ms ease-out both;
+}
+
+/* ---------- 顶栏：左对齐，底部一条细线 ---------- */
+.ledger-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-3) var(--space-7);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ledger-brand {
+  flex: none;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.ledger-brand span {
+  font-family: var(--font-num);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted);
+  margin-left: var(--space-2);
+}
+
+.ledger-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ledger-nav::-webkit-scrollbar { display: none; }
+.ledger-nav a {
+  flex: none;
+  padding: 6px var(--space-3);
+  border-radius: var(--radius-pill);
+  color: var(--color-text-soft);
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--motion-fast) ease-out, color var(--motion-fast) ease-out;
+}
+.ledger-nav a:hover { background: var(--color-surface-muted); color: var(--color-text); }
+.ledger-nav a[aria-current="page"] {
+  background: var(--color-success-soft);
+  color: var(--color-success-strong);
+  font-weight: 600;
+}
+
+.ledger-topbar-status {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--color-text-soft);
+  white-space: nowrap;
+}
+.status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--color-success);
+  flex: none;
+}
+.status-dot.is-cached { background: var(--color-warning); }
+.status-dot.is-error { background: var(--color-danger); }
+
+/* ---------- 通用分节：一条横线，不套卡片 ---------- */
+.ledger-section {
+  padding: var(--space-6) var(--space-7);
+  border-bottom: 1px solid var(--color-border);
+}
+.ledger-section:last-of-type { border-bottom: 0; }
+
+.ledger-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin: 0 0 var(--space-5);
+}
+.ledger-section-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.ledger-section-head p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+/* ---------- 主数字：全页唯一用力处 ---------- */
+.ledger-hero { padding-top: var(--space-7); padding-bottom: var(--space-6); }
+
+.ledger-hero-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.ledger-instrument {
+  font-family: var(--font-num);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.ledger-instrument small {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-muted);
+  letter-spacing: 0;
+}
+.ledger-env {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--color-text-soft);
+}
+.env-tag {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  color: var(--color-text-soft);
+  white-space: nowrap;
+}
+
+.ledger-price {
+  margin: var(--space-5) 0 var(--space-2);
+  font-family: var(--font-num);
+  font-size: var(--type-display);
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+}
+.ledger-price-unit {
+  margin-left: var(--space-3);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--color-muted);
+}
+
+.ledger-price-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  font-size: 13px;
+}
+.ledger-price-change {
+  font-family: var(--font-num);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.is-up { color: var(--color-success-strong); }
+.is-down { color: var(--color-danger); }
+.ledger-price-meta dl {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.ledger-price-meta dt { color: var(--color-muted); }
+.ledger-price-meta dd {
+  margin: 0;
+  font-family: var(--font-num);
+  font-size: 13px;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 两栏：一条竖线，不是两张卡片 ---------- */
+.ledger-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  border-bottom: 1px solid var(--color-border);
+}
+.ledger-column { padding: var(--space-6) var(--space-7); min-width: 0; }
+.ledger-column + .ledger-column { border-left: 1px solid var(--color-border); }
+
+.ledger-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+.ledger-periods { display: flex; gap: var(--space-1); flex-wrap: wrap; }
+.period-button {
+  min-height: var(--control-height-sm);
+  padding: 0 var(--space-2);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  font-family: var(--font-num);
+  font-size: 12px;
+  color: var(--color-text-soft);
+  transition: background var(--motion-fast) ease-out, border-color var(--motion-fast) ease-out;
+}
+.period-button:hover { background: var(--color-surface-muted); }
+.period-button[aria-pressed="true"] {
+  background: var(--color-success-soft);
+  border-color: var(--color-success);
+  color: var(--color-success-strong);
+  font-weight: 600;
+}
+.toolbar-spacer { flex: 1 1 auto; }
+.toolbar-count { font-size: 12px; color: var(--color-muted); white-space: nowrap; }
+
+/* 行情表：行用分隔线，选择态用浅底 + 左侧标记，不只改文字颜色 */
+.table-scroll { overflow-x: auto; }
+.ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ledger-table thead th {
+  padding: 0 var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--color-border-strong);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted);
+  text-align: left;
+  white-space: nowrap;
+}
+.ledger-table th.num,
+.ledger-table td.num { text-align: right; }
+.ledger-table tbody td {
+  padding: var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.ledger-table tbody tr:last-child td { border-bottom: 0; }
+.ledger-table tbody tr { transition: background var(--motion-fast) ease-out; }
+.ledger-table tbody tr:hover { background: var(--color-surface-muted); }
+.ledger-table tbody tr[aria-current="true"] {
+  background: var(--color-success-soft);
+  box-shadow: inset 3px 0 0 var(--color-success);
+}
+.instrument-button {
+  padding: 0;
+  background: none;
+  border: 0;
+  font-family: var(--font-num);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  letter-spacing: 0.01em;
+  transition: color var(--motion-fast) ease-out;
+}
+.instrument-button:hover { color: var(--color-success-strong); text-decoration: underline; text-underline-offset: 3px; }
+.ledger-table .num {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+.ledger-table .muted { color: var(--color-text-soft); font-size: 12px; }
+.trend-arrow { margin-right: var(--space-1); font-family: var(--font-ui); }
+
+/* 账户定义列表：标签左、数值右，形成第二条对齐轴 */
+.account-list { margin: 0; }
+.account-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.account-row:first-child { padding-top: 0; }
+.account-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.account-row dt { font-size: 13px; color: var(--color-text-soft); }
+.account-row dd {
+  margin: 0;
+  font-family: var(--font-num);
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.account-row dd small {
+  margin-left: var(--space-1);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-muted);
+}
+.account-note {
+  margin: var(--space-5) 0 0;
+  font-size: 12px;
+  color: var(--color-muted);
+  line-height: 1.6;
+}
+
+/* ---------- 底部状态栏 ---------- */
+.ledger-feedback {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-4) var(--space-7);
+  background: var(--color-surface-muted);
+  border-bottom: 1px solid var(--color-border);
+}
+.feedback-text { margin: 0; font-size: 12px; color: var(--color-text-soft); line-height: 1.6; }
+.feedback-text strong { font-weight: 600; color: var(--color-text); }
+.feedback-actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-2); }
+
+.plain-button {
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-panel);
+  font-size: 13px;
+  transition: background var(--motion-fast) ease-out, border-color var(--motion-fast) ease-out, transform 80ms ease-out;
+}
+.plain-button:hover:not(:disabled) { background: var(--color-surface-muted); border-color: var(--color-muted); }
+.plain-button:active:not(:disabled) { transform: translateY(1px); }
+.plain-button:disabled { opacity: 0.55; }
+.primary-button {
+  min-height: var(--control-height-lg);
+  padding: 0 var(--space-4);
+  background: var(--color-text);
+  border: 1px solid var(--color-text);
+  border-radius: var(--radius-panel);
+  color: var(--color-surface);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background var(--motion-fast) ease-out, transform 80ms ease-out;
+}
+.primary-button:hover:not(:disabled) { background: #253241; }
+.primary-button:active:not(:disabled) { transform: translateY(1px); }
+.primary-button:disabled { opacity: 0.5; }
+
+/* ---------- 参考区：低视觉权重，默认不抢主界面 ---------- */
+.ledger-reference { padding: var(--space-5) var(--space-7) var(--space-6); border-bottom: 1px solid var(--color-border); }
+.ledger-reference > summary {
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  list-style-position: inside;
+  padding: var(--space-1) 0;
+}
+.ledger-reference > summary::-webkit-details-marker { color: var(--color-muted); }
+.ledger-reference > summary span {
+  margin-left: var(--space-3);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-muted);
+}
+.reference-inner { margin-top: var(--space-5); }
+.ledger-reference:not([open]) { padding-bottom: var(--space-4); }
+.reference-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--space-6);
+}
+.reference-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.reference-row:last-child { border-bottom: 0; }
+.reference-label {
+  flex: none;
+  width: 72px;
+  font-family: var(--font-num);
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.reference-body { min-width: 0; color: var(--color-text-soft); }
+.reference-body strong { color: var(--color-text); font-weight: 600; }
+.state-tag {
+  display: inline-block;
+  margin-right: var(--space-2);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.state-tag.is-cached { background: var(--color-warning-soft); color: var(--color-warning); }
+.state-tag.is-error { background: var(--color-danger-soft); color: var(--color-danger); }
+.state-tag.is-neutral { background: var(--color-bg); color: var(--color-muted); }
+.skeleton-line {
+  display: inline-block;
+  vertical-align: middle;
+  width: 96px; height: 8px;
+  margin-left: var(--space-2);
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--color-bg) 25%, var(--color-border-strong) 50%, var(--color-bg) 75%);
+  background-size: 200% 100%;
+  animation: skeleton 1.4s ease-in-out infinite;
+}
+@keyframes skeleton { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.reference-row .plain-button { min-height: var(--control-height-sm); font-size: 12px; margin-left: var(--space-2); }
+
+/* ---------- 设计令牌（折叠，保持默认视图干净） ---------- */
+.ledger-tokens { padding: var(--space-4) var(--space-7) var(--space-5); background: var(--color-surface-muted); }
+.ledger-tokens > summary {
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style-position: inside;
+  padding: var(--space-1) 0;
+}
+.ledger-tokens > summary::-webkit-details-marker { color: var(--color-muted); }
+.tokens-inner { margin-top: var(--space-4); }
+.tokens-group + .tokens-group { margin-top: var(--space-5); }
+.tokens-group h3 {
+  margin: 0 0 var(--space-2);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-muted);
+}
+.swatch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+}
+.swatch-row:last-child { border-bottom: 0; }
+.swatch {
+  flex: none;
+  width: 28px; height: 16px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 3px;
+}
+.swatch-row code { font-family: var(--font-num); font-size: 12px; color: var(--color-text); }
+.swatch-row span { color: var(--color-muted); }
+.type-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.type-row:last-child { border-bottom: 0; }
+.type-row code { flex: none; width: 132px; font-family: var(--font-num); color: var(--color-text); }
+.type-sample { color: var(--color-text); }
+.tokens-note {
+  margin: var(--space-4) 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--color-text-soft);
+  max-width: 76ch;
+}
+
+.ledger-footer {
+  padding: var(--space-3) var(--space-7);
+  border-top: 1px solid var(--color-border);
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+/* ---------- PC 专用画布 ---------- */
+/* 目标视口 ≥1200px。不做移动端重排：窄窗口保留横向滚动，而不是挤压数据列。 */
+body { min-width: 1180px; }
+
+/* 表格始终保持完整列，不按窄视口重排。 */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+<div class="ledger-sheet">
+  <header class="ledger-topbar">
+    <div class="ledger-brand">OKX 永续合约看板 <span>local</span></div>
+    <nav class="ledger-nav" aria-label="一级导航">
+      <a href="#quotes" aria-current="page">市场</a>
+      <a href="#quotes">交易</a>
+      <a href="#quotes">订单</a>
+      <a href="#quotes">自动化</a>
+      <a href="#account">账户</a>
+      <a href="#states">设置</a>
+    </nav>
+    <div class="ledger-topbar-status">
+      <span class="status-dot" aria-hidden="true"></span>
+      <span>行情实时 · 虚拟盘已连接</span>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="ledger-section ledger-hero" aria-labelledby="hero-title">
+      <h1 id="hero-title" class="sr-only">当前合约行情</h1>
+      <div class="ledger-hero-top">
+        <div class="ledger-instrument">
+          <span id="heroInstrument">BTC-USDT-SWAP</span>
+          <small>永续合约 · 当前选中</small>
+        </div>
+        <div class="ledger-env">
+          <span class="env-tag">虚拟盘</span>
+          <span>实盘下单未开启</span>
+        </div>
+      </div>
+
+      <p class="ledger-price">
+        <span id="heroPrice">67,842.1</span><span class="ledger-price-unit">USDT</span>
+      </p>
+
+      <div class="ledger-price-meta">
+        <span class="ledger-price-change is-up" id="heroChange">+1,284.6&nbsp; +1.93%</span>
+        <span class="sr-only" id="heroDirection">较 24 小时前上涨</span>
+        <dl><dt>24h 最高</dt><dd id="heroHigh">68,410.0</dd></dl>
+        <dl><dt>24h 最低</dt><dd id="heroLow">66,203.5</dd></dl>
+        <dl><dt>资金费率</dt><dd id="heroFunding">0.008%</dd></dl>
+      </div>
+    </section>
+
+    <div class="ledger-columns">
+      <section class="ledger-column" id="quotes" aria-labelledby="quotes-title">
+        <div class="ledger-section-head">
+          <h2 id="quotes-title">关注合约</h2>
+          <p id="switchHint" aria-live="polite">选择合约后，上方价格随之更新</p>
+        </div>
+
+        <div class="ledger-toolbar">
+          <div class="ledger-periods" role="group" aria-label="K 线周期">
+            <button type="button" class="period-button" aria-pressed="false">1m</button>
+            <button type="button" class="period-button" aria-pressed="false">5m</button>
+            <button type="button" class="period-button" aria-pressed="false">15m</button>
+            <button type="button" class="period-button" aria-pressed="true">1H</button>
+            <button type="button" class="period-button" aria-pressed="false">4H</button>
+            <button type="button" class="period-button" aria-pressed="false">1D</button>
+          </div>
+          <span class="toolbar-spacer"></span>
+          <span class="toolbar-count">4 个合约</span>
+        </div>
+
+        <div class="table-scroll">
+          <table class="ledger-table" role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th scope="col" role="columnheader">合约</th>
+                <th scope="col" role="columnheader" class="num">最新价</th>
+                <th scope="col" role="columnheader" class="num">标记价</th>
+                <th scope="col" role="columnheader" class="num">24h 变动</th>
+                <th scope="col" role="columnheader" class="num">24h 成交额</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup" id="quoteRows">
+              <tr role="row" aria-current="true" data-symbol="BTC-USDT-SWAP">
+                <td role="cell"><button type="button" class="instrument-button">BTC-USDT-SWAP</button></td>
+                <td role="cell" class="num">67,842.1</td>
+                <td role="cell" class="num muted">67,838.4</td>
+                <td role="cell" class="num is-up"><span class="trend-arrow" aria-hidden="true">↑</span>+1.93%<span class="sr-only"> 上涨</span></td>
+                <td role="cell" class="num muted">1.42B</td>
+              </tr>
+              <tr role="row" aria-current="false" data-symbol="ETH-USDT-SWAP">
+                <td role="cell"><button type="button" class="instrument-button">ETH-USDT-SWAP</button></td>
+                <td role="cell" class="num">3,512.6</td>
+                <td role="cell" class="num muted">3,511.9</td>
+                <td role="cell" class="num is-down"><span class="trend-arrow" aria-hidden="true">↓</span>-0.74%<span class="sr-only"> 下跌</span></td>
+                <td role="cell" class="num muted">728.4M</td>
+              </tr>
+              <tr role="row" aria-current="false" data-symbol="SOL-USDT-SWAP">
+                <td role="cell"><button type="button" class="instrument-button">SOL-USDT-SWAP</button></td>
+                <td role="cell" class="num">182.34</td>
+                <td role="cell" class="num muted">182.30</td>
+                <td role="cell" class="num is-up"><span class="trend-arrow" aria-hidden="true">↑</span>+3.18%<span class="sr-only"> 上涨</span></td>
+                <td role="cell" class="num muted">214.7M</td>
+              </tr>
+              <tr role="row" aria-current="false" data-symbol="DOGE-USDT-SWAP">
+                <td role="cell"><button type="button" class="instrument-button">DOGE-USDT-SWAP</button></td>
+                <td role="cell" class="num">0.2148</td>
+                <td role="cell" class="num muted">0.2147</td>
+                <td role="cell" class="num is-down"><span class="trend-arrow" aria-hidden="true">↓</span>-1.12%<span class="sr-only"> 下跌</span></td>
+                <td role="cell" class="num muted">96.3M</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="account-note">成交额以 USDT 计，来自公开行情。缓存行情会在状态栏标明新鲜度。</p>
+      </section>
+
+      <section class="ledger-column" id="account" aria-labelledby="account-title">
+        <div class="ledger-section-head">
+          <h2 id="account-title">账户概览</h2>
+          <p>虚拟盘 · 快照</p>
+        </div>
+        <dl class="account-list">
+          <div class="account-row"><dt>总权益</dt><dd>12,480.62 <small>USDT</small></dd></div>
+          <div class="account-row"><dt>可用保证金</dt><dd>8,204.18 <small>USDT</small></dd></div>
+          <div class="account-row"><dt>已用保证金</dt><dd>4,276.44 <small>USDT</small></dd></div>
+          <div class="account-row"><dt>未实现盈亏</dt><dd class="is-up">+326.40 <small>USDT · 盈利</small></dd></div>
+          <div class="account-row"><dt>保证金率</dt><dd>18.6%</dd></div>
+          <div class="account-row"><dt>持仓 / 挂单</dt><dd>2 <small>笔</small> / 1 <small>笔</small></dd></div>
+        </dl>
+        <p class="account-note">自动化交易只在虚拟盘执行。实盘默认只读，需显式开启授权后才能下单。</p>
+      </section>
+    </div>
+
+    <div class="ledger-feedback" id="feedback">
+      <p class="feedback-text">
+        <strong>行情实时</strong> · 账户快照更新于 <span id="snapshotTime">--:--:--</span> · 自动化仅在虚拟盘运行
+        <span id="refreshStatus" aria-live="polite"></span>
+      </p>
+      <div class="feedback-actions">
+        <button type="button" class="plain-button" id="refreshButton">刷新行情</button>
+        <button type="button" class="primary-button">去下单</button>
+      </div>
+    </div>
+
+    <details class="ledger-reference" id="states">
+      <summary>界面状态 <span>展开查看六种反馈：加载、缓存、错误、空状态、禁用与键盘焦点</span></summary>
+      <div class="reference-inner">
+      <div class="reference-grid">
+        <div class="reference-row">
+          <span class="reference-label">更新中</span>
+          <span class="reference-body"><strong>行情更新中，当前价格保持不变。</strong><span class="skeleton-line" aria-hidden="true"></span></span>
+        </div>
+        <div class="reference-row">
+          <span class="reference-label">缓存</span>
+          <span class="reference-body"><span class="state-tag is-cached">缓存 · 需检查</span>账户快照来自 14:28 的缓存，正在重连。</span>
+        </div>
+        <div class="reference-row">
+          <span class="reference-label">错误</span>
+          <span class="reference-body"><span class="state-tag is-error">失败</span>行情接口没返回数据，合约列表沿用缓存。<button type="button" class="plain-button">重试行情</button></span>
+        </div>
+        <div class="reference-row">
+          <span class="reference-label">空状态</span>
+          <span class="reference-body">还没有关注合约。添加后这里会显示实时价格。<button type="button" class="plain-button">添加合约</button></span>
+        </div>
+        <div class="reference-row">
+          <span class="reference-label">禁用</span>
+          <span class="reference-body"><button type="button" class="primary-button" disabled>实盘下单</button> 在设置中开启实盘交易授权后可用。</span>
+        </div>
+        <div class="reference-row">
+          <span class="reference-label">键盘焦点</span>
+          <span class="reference-body"><span class="state-tag is-neutral">Tab</span>每个可操作元素都有清晰焦点环，选中态同时改变底色与左侧标记。</span>
+        </div>
+      </div>
+      </div>
+    </details>
+
+    <details class="ledger-tokens">
+      <summary>配色、字体与版式令牌</summary>
+      <div class="tokens-inner">
+        <div class="tokens-group">
+          <h3>颜色（沿用 frontend/src/styles.css，未新增）</h3>
+          <div class="swatch-row"><span class="swatch" style="background:#eef3f8"></span><code>#eef3f8</code><span>页面底 --color-bg</span></div>
+          <div class="swatch-row"><span class="swatch" style="background:#ffffff"></span><code>#ffffff</code><span>内容纸面 --color-surface</span></div>
+          <div class="swatch-row"><span class="swatch" style="background:#17202a"></span><code>#17202a</code><span>主文字 --color-text</span></div>
+          <div class="swatch-row"><span class="swatch" style="background:#68788a"></span><code>#68788a</code><span>次级文字 --color-muted</span></div>
+          <div class="swatch-row"><span class="swatch" style="background:#e1e8f0"></span><code>#e1e8f0</code><span>分隔线 --color-border</span></div>
+          <div class="swatch-row"><span class="swatch" style="background:#0d9f65"></span><code>#0d9f65</code><span>上涨 / 实时 --color-success</span></div>
+          <div class="swatch-row"><span class="swatch" style="background:#b93042"></span><code>#b93042</code><span>下跌 / 失败 --color-danger</span></div>
+          <div class="swatch-row"><span class="swatch" style="background:#9b5d10"></span><code>#9b5d10</code><span>缓存 / 待确认 --color-warning</span></div>
+        </div>
+        <div class="tokens-group">
+          <h3>字体与字阶</h3>
+          <div class="type-row"><code>IBM Plex Sans</code><span class="type-sample" style="font-size:13px">界面西文与中文叙述，中文回退 PingFang SC / 微软雅黑</span></div>
+          <div class="type-row"><code>IBM Plex Mono</code><span class="type-sample" style="font-family:var(--font-num);font-size:13px">价格 67,842.1 · 代码 · 时间 · 百分比</span></div>
+          <div class="type-row"><code>20 / 16 / 13 / 12</code><span class="type-sample">页面标题 / 模块标题 / 正文与表格 / 辅助信息，沿用规范 4.3</span></div>
+          <div class="type-row"><code>48px display</code><span class="type-sample" style="font-family:var(--font-num);font-weight:600">唯一新增层级，仅用于当前合约最新价</span></div>
+        </div>
+        <div class="tokens-group">
+          <h3>版式</h3>
+          <div class="type-row"><code>1440px / 48px</code><span class="type-sample">PC 桌面画布最大宽度与左对齐轴</span></div>
+          <div class="type-row"><code>1.6 : 1</code><span class="type-sample">行情 / 账户两栏，中间一条竖线，不嵌套卡片</span></div>
+          <div class="type-row"><code>24px 模块间距</code><span class="type-sample">标题与内容、说明与数据之间用 space-5，首屏更透气</span></div>
+          <div class="type-row"><code>4px grid</code><span class="type-sample">间距、8px 圆角、28/34/40px 控件高度全部沿用既有令牌</span></div>
+          <div class="type-row"><code>≥1200px 桌面</code><span class="type-sample">表格保留完整列；窄窗口横向滚动，不挤压数据</span></div>
+        </div>
+        <p class="tokens-note">这是一份独立设计提案，页面结构未改动生产前端。颜色语义沿用项目规范 4.2 的绿涨红跌（与 OKX 等加密交易所惯例一致）；若要切换为 A 股习惯，只需交换 success / danger 两个令牌，并保证状态始终有文字说明。IBM Plex 字族与 48px 展示层级已补写进 <code>docs/frontend-design-guidelines.md</code> 第 4.3 节，并作为全局令牌落地到 <code>styles.css</code> 与 <code>mantineTheme.ts</code>；生产采用自托管字体，本预览稿仍用外链加载同一字族。第二版把界面状态样本收进折叠区，首屏只保留价格、行情与账户。这一份是 PC 专用稿，不含移动端适配；替换生产页面时仍需按规范 3.4 补响应式。</p>
+      </div>
+    </details>
+
+    <footer class="ledger-footer">前端视觉方案 · PC 版（≥1200px 桌面） · 响应式版见 frontend-visual-identity.html · 令牌取自 frontend/src/styles.css · 全局令牌已落地，页面结构未改动</footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var quotes = {
+    "BTC-USDT-SWAP": { price: "67,842.1", change: "+1,284.6", pct: "+1.93%", high: "68,410.0", low: "66,203.5", funding: "0.008%", up: true },
+    "ETH-USDT-SWAP": { price: "3,512.6", change: "-26.2", pct: "-0.74%", high: "3,568.4", low: "3,490.1", funding: "0.010%", up: false },
+    "SOL-USDT-SWAP": { price: "182.34", change: "+5.62", pct: "+3.18%", high: "184.90", low: "175.11", funding: "0.012%", up: true },
+    "DOGE-USDT-SWAP": { price: "0.2148", change: "-0.0024", pct: "-1.12%", high: "0.2196", low: "0.2129", funding: "0.006%", up: false }
+  };
+
+  var heroInstrument = document.getElementById("heroInstrument");
+  var heroPrice = document.getElementById("heroPrice");
+  var heroChange = document.getElementById("heroChange");
+  var heroHigh = document.getElementById("heroHigh");
+  var heroLow = document.getElementById("heroLow");
+  var heroFunding = document.getElementById("heroFunding");
+  var heroDirection = document.getElementById("heroDirection");
+  var switchHint = document.getElementById("switchHint");
+  var rows = Array.prototype.slice.call(document.querySelectorAll("#quoteRows tr"));
+
+  function selectInstrument(symbol) {
+    var q = quotes[symbol];
+    if (!q) return;
+    heroInstrument.textContent = symbol;
+    heroPrice.textContent = q.price;
+    heroChange.textContent = q.change + "  " + q.pct;
+    heroChange.className = "ledger-price-change " + (q.up ? "is-up" : "is-down");
+    heroHigh.textContent = q.high;
+    heroLow.textContent = q.low;
+    heroFunding.textContent = q.funding;
+    heroDirection.textContent = q.up ? "较 24 小时前上涨" : "较 24 小时前下跌";
+    rows.forEach(function (row) {
+      row.setAttribute("aria-current", row.dataset.symbol === symbol ? "true" : "false");
+    });
+    switchHint.textContent = "已切换到 " + symbol + "，上方价格已更新";
+  }
+
+  rows.forEach(function (row) {
+    row.querySelector(".instrument-button").addEventListener("click", function () {
+      selectInstrument(row.dataset.symbol);
+    });
+  });
+
+  var periodButtons = Array.prototype.slice.call(document.querySelectorAll(".period-button"));
+  periodButtons.forEach(function (button) {
+    button.addEventListener("click", function () {
+      periodButtons.forEach(function (other) {
+        other.setAttribute("aria-pressed", other === button ? "true" : "false");
+      });
+      switchHint.textContent = "K 线周期已切换到 " + button.textContent;
+    });
+  });
+
+  function clock() {
+    return new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  }
+  var snapshotTime = document.getElementById("snapshotTime");
+  snapshotTime.textContent = clock();
+
+  var refreshButton = document.getElementById("refreshButton");
+  var refreshStatus = document.getElementById("refreshStatus");
+  refreshButton.addEventListener("click", function () {
+    refreshButton.disabled = true;
+    refreshButton.textContent = "更新中…";
+    refreshStatus.textContent = " · 行情更新中，保留当前价格";
+    window.setTimeout(function () {
+      refreshButton.disabled = false;
+      refreshButton.textContent = "刷新行情";
+      snapshotTime.textContent = clock();
+      refreshStatus.textContent = " · 行情已更新";
+    }, 900);
+  });
+})();
+</script>
+</body>
+</html>

@@ -13,18 +13,23 @@ const workspace: MantineColorsTuple = [
   "#172c3b"
 ];
 
+// 与 styles.css 的 --font-ui / --font-num 保持一致（设计规范 4.3）。
+const fontUi =
+  '"IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const fontNum = '"IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace';
+
 export const mantineTheme = createTheme({
   primaryColor: "workspace",
   primaryShade: 8,
   colors: { workspace },
-  fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-  fontFamilyMonospace: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+  fontFamily: fontUi,
+  fontFamilyMonospace: fontNum,
   defaultRadius: "sm",
   radius: { xs: "4px", sm: "8px", md: "8px", lg: "12px", xl: "16px" },
   spacing: { xs: "4px", sm: "8px", md: "12px", lg: "16px", xl: "24px" },
   fontSizes: { xs: "12px", sm: "13px", md: "14px", lg: "16px", xl: "20px" },
   headings: {
-    fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    fontFamily: fontUi,
     fontWeight: "750"
   },
   breakpoints: { xs: "36em", sm: "48em", md: "75em", lg: "90em", xl: "120em" },

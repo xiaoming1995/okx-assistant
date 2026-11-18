@@ -1,6 +1,47 @@
+/* 自托管 IBM Plex 拉丁子集：本地看板运行时不依赖外部字体 CDN。
+   中文走系统中文字族；字体加载失败时整条回退链保证界面与数据仍可读。 */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-700.woff2") format("woff2");
+}
+
 :root {
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
   --color-bg: #eef3f8;
   --color-bg-soft: #f7f9fc;
   --color-surface: #ffffff;
@@ -33,6 +74,10 @@
   --space-5: 24px;
   --space-6: 32px;
   --space-7: 48px;
+  /* 排版令牌（设计规范 4.3）：展示级只用于当前合约最新价这一个数字。 */
+  --font-ui: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --type-display: 48px;
   --radius-panel: 8px;
   --radius-control: 7px;
   --radius-pill: 999px;
@@ -65,6 +110,11 @@
   text-rendering: optimizeLegibility;
 }
 
+/* 数值与代码类原生元素使用同源等宽字族（设计规范 4.3）。 */
+code, kbd, samp, pre {
+  font-family: var(--font-num);
+}
+
 .marketMain.marketOverviewPage {
   overflow-y: auto;
   gap: var(--space-4);
@@ -91,13 +141,15 @@
 .marketOverviewGrid {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  grid-template-areas: "volume events" "tickers events";
+  grid-template-areas: "volume events" "tickers breadth";
   gap: var(--space-4);
-  align-items: start;
+  /* 同一行的两张卡片等高，避免事件卡片变高后左侧留下蓝色空档。 */
+  align-items: stretch;
 }
 
 .marketOverviewVolume { grid-area: volume; }
 .marketOverviewEvents { grid-area: events; }
+.marketOverviewBreadth { grid-area: breadth; }
 
 .marketOverviewPanel {
   min-width: 0;
@@ -135,16 +187,144 @@
 }
 
 .marketOverviewBigNumber {
-  font-size: 32px;
-  font-weight: 800;
+  font-family: var(--font-num);
+  font-size: var(--type-display);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 
 .marketOverviewBigNumber small {
   color: var(--color-text-soft);
+  font-family: var(--font-ui);
   font-size: 13px;
   font-weight: 600;
+}
+
+.marketOverviewVolumeHeader {
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.marketOverviewVolumeHeader > div {
+  min-width: 0;
+}
+
+.marketOverviewVolumeMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-1);
+  font-size: 12px;
+  color: var(--color-muted-strong);
+}
+
+.marketOverviewVolumeMeta .up {
+  color: var(--color-success-strong);
+  font-weight: 700;
+}
+
+.marketOverviewVolumeMeta .down {
+  color: var(--color-danger);
+  font-weight: 700;
+}
+
+.marketOverviewVolumeTrend {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 48px;
+  margin-top: var(--space-3);
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.marketOverviewVolumeTrend span {
+  flex: 1 1 0;
+  min-width: 2px;
+  border-radius: 2px 2px 0 0;
+  background: #afc8e8;
+}
+
+.marketOverviewVolumeTrend span:last-child {
+  background: #3b6fc4;
+}
+
+/* 上一周期用琥珀色单独标出，和本期深蓝、更早的浅蓝区分开。 */
+.marketOverviewVolumeTrend span.marketOverviewVolumeTrendPrevious {
+  background: #e8b25c;
+}
+
+.marketOverviewVolumeLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px var(--space-3);
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--color-muted-strong);
+}
+
+.marketOverviewVolumeLegend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.marketOverviewVolumeLegend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border-radius: 2px;
+}
+
+.marketOverviewLegendPrevious {
+  background: #e8b25c;
+}
+
+.marketOverviewLegendCurrent {
+  background: #3b6fc4;
+}
+
+.marketOverviewTrendCaption {
+  margin-top: 4px;
+  color: var(--color-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* 卡片等高时把来源说明推到底部，留白看起来是刻意的而不是内容缺失。 */
+.marketOverviewPanel > .marketOverviewSource:last-child,
+.marketOverviewPanel > .marketOverviewScope:last-child {
+  margin-top: auto;
+}
+
+.marketOverviewVolumeComparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.marketOverviewVolumeComparison span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.marketOverviewVolumeComparison strong {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.marketOverviewVolumeComparison small {
+  color: var(--color-muted);
+  font-size: 11px;
 }
 
 .marketOverviewUpdating {
@@ -234,10 +414,152 @@
   grid-column: 2;
 }
 
+.marketOverviewEvent.isPast strong {
+  color: var(--color-text-soft);
+}
+
+.marketOverviewSentiment {
+  flex: 0 0 auto;
+  padding: 2px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+  color: var(--color-muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.marketOverviewSentiment.isUp {
+  border-color: var(--color-success-border);
+  background: var(--color-success-soft);
+  color: var(--color-success-strong);
+}
+
+.marketOverviewSentiment.isDown {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.marketOverviewBreadthCounts,
+.marketOverviewBreadthMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.marketOverviewBreadthCounts span,
+.marketOverviewBreadthMetrics span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.marketOverviewBreadthCounts strong {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.marketOverviewBreadthMetrics strong {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.marketOverviewBreadthCounts small,
+.marketOverviewBreadthMetrics small {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.marketOverviewBreadthCounts .up strong {
+  color: var(--color-success-strong);
+}
+
+.marketOverviewBreadthCounts .down strong {
+  color: var(--color-danger);
+}
+
+.marketOverviewBreadthBar {
+  display: flex;
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+}
+
+.marketOverviewBreadthBar span {
+  display: block;
+  height: 100%;
+}
+
+.marketOverviewBreadthBar .up { background: var(--color-success); }
+.marketOverviewBreadthBar .down { background: var(--color-danger); }
+.marketOverviewBreadthBar .flat { background: var(--color-border-strong); }
+
+.marketOverviewBreadthLeaders {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.marketOverviewBreadthLeaders > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.marketOverviewBreadthLeaders h3 {
+  margin: 0 0 2px;
+  color: var(--color-muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.marketOverviewBreadthLeaders p {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.marketOverviewLeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 4px 6px;
+  border-radius: var(--radius-control);
+  font-size: 12px;
+  text-align: left;
+}
+
+.marketOverviewLeader:hover { background: var(--color-surface-muted); }
+.marketOverviewLeader:focus-visible { outline: 2px solid var(--color-success); outline-offset: 2px; }
+
+.marketOverviewLeader span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketOverviewLeader strong {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.marketOverviewLeader .up { color: var(--color-success-strong); }
+.marketOverviewLeader .down { color: var(--color-danger); }
+
 @media (max-width: 767px) {
   .marketOverviewGrid {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "volume" "events" "tickers";
+    grid-template-areas: "volume" "events" "tickers" "breadth";
   }
 
   .marketOverviewTicker {
@@ -681,6 +1003,17 @@ textarea:focus-visible {
   flex-wrap: wrap;
 }
 
+/* 同一操作组内的按钮与图标按钮必须等高：Mantine 默认 sm=36px、xs=34px、
+   自建 .iconButton=34px、primaryButton=40px，混用时会产生 2–6px 的高度错位。
+   这里统一约束为标准控件高度，保持按钮组视觉对齐。 */
+.workspaceActions > .secondaryButton,
+.workspaceActions > .primaryButton,
+.workspaceActions > .iconButton,
+.workspaceActions > button {
+  height: var(--control-height);
+  min-height: var(--control-height);
+}
+
 /* Keep the AI report context readable when its operational controls need room. */
 .marketAiWorkspaceHeader {
   flex: 0 0 auto;
@@ -1075,7 +1408,7 @@ textarea:focus-visible {
   min-height: 28px;
   font-size: 12px;
   font-weight: 800;
-  padding: 0 7px;
+  padding: 0 8px;
 }
 
 .instrumentControlMenu > button {
@@ -1140,11 +1473,11 @@ textarea:focus-visible {
   color: inherit;
   cursor: pointer;
   text-align: left;
-  padding: 8px 40px 8px 10px;
+  padding: 8px 40px 8px 12px;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) minmax(82px, auto);
   align-items: center;
-  column-gap: 10px;
+  column-gap: 12px;
 }
 
 .instrumentAvatar {
@@ -1209,7 +1542,13 @@ textarea:focus-visible {
 }
 
 .instrumentSubtitle {
-  display: block;
+  /* 副标题含 24h 成交额等实质数据，单行省略会把信息整段吞掉，改为最多两行展示。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: #7b8798;
   font-size: 12px;
   line-height: 1.15;
@@ -1353,6 +1692,7 @@ textarea:focus-visible {
 .heroPriceBlock strong {
   display: block;
   margin: 1px 0;
+  font-family: var(--font-num);
   font-size: 24px;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
@@ -1361,9 +1701,13 @@ textarea:focus-visible {
   text-overflow: ellipsis;
 }
 
+.heroPriceBlock small {
+  font-family: var(--font-num);
+}
+
 .heroPriceBlock small.up,
 .heroPriceBlock small.down {
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .heroTiles {
@@ -1400,6 +1744,7 @@ textarea:focus-visible {
 .miniMetric strong {
   margin-top: 2px;
   color: #17202a;
+  font-family: var(--font-num);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
@@ -1502,7 +1847,7 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid #e2e9f1;
-  padding: 5px 10px;
+  padding: 4px 12px;
   flex: 0 0 auto;
 }
 
@@ -1752,7 +2097,7 @@ textarea:focus-visible {
 }
 
 .chartRangeLegend.low {
-  color: #1aa768;
+  color: #1dbf73;
 }
 
 .chartRangeLegend.neutral {
@@ -1830,7 +2175,7 @@ textarea:focus-visible {
   border: 1px solid #dce8e1;
   border-radius: 9px;
   background: #f6fbf8;
-  padding: var(--market-ai-space-compact) 10px;
+  padding: var(--market-ai-space-compact) 12px;
   color: #426055;
   font-size: 13px;
   line-height: 1.35;
@@ -1853,6 +2198,10 @@ textarea:focus-visible {
 }
 
 .marketAiRefreshIcon.isSpinning {
+  animation: market-ai-spin 0.8s linear infinite;
+}
+
+.radarAnalysisSpinner.isSpinning {
   animation: market-ai-spin 0.8s linear infinite;
 }
 
@@ -2053,7 +2402,7 @@ textarea:focus-visible {
 .usTimelineHeader { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px auto; align-items: center; flex: 0 0 auto; margin: 0 0 16px; }
 .usTimelineHeader > .iconButton { justify-self: start; }
 .usTimelineNow { min-width: 38px; height: 32px; margin-left: 2px; }
-.usTimelineDates { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); flex: 0 0 auto; gap: 8px; margin: 0 0 14px; }.usTimelineDates button { min-height: 70px; border: 1px solid #dfe3e6; background: #fff; border-radius: 12px; padding: 8px 4px; color: #a5a9ad; display: grid; align-content: center; gap: 4px; cursor: pointer; }.usTimelineDates button:hover { background: #f6f7f8; color: var(--text); }.usTimelineDates button.selected { border-color: #17202a; background: #fff; color: #17202a; box-shadow: inset 0 0 0 1px #17202a; }.usTimelineDates strong { font-size: 22px; line-height: 1; }.usTimelineDates span { font-size: 13px; }
+.usTimelineDates { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); flex: 0 0 auto; gap: 8px; margin: 0 0 16px; }.usTimelineDates button { min-height: 70px; border: 1px solid #dfe3e6; background: #fff; border-radius: 12px; padding: 8px 4px; color: #a5a9ad; display: grid; align-content: center; gap: 4px; cursor: pointer; }.usTimelineDates button:hover { background: #f6f7f8; color: var(--text); }.usTimelineDates button.selected { border-color: #17202a; background: #fff; color: #17202a; box-shadow: inset 0 0 0 1px #17202a; }.usTimelineDates strong { font-size: 22px; line-height: 1; }.usTimelineDates span { font-size: 13px; }
 .usTimelineFilters { display: flex; align-items: center; flex: 0 0 auto; gap: var(--space-3); margin: 0 0 var(--space-5); }
 .usTimelineFilterGroup { display: flex; align-items: center; gap: var(--space-2); }
 .usTimelineFilterGroup button { min-height: var(--control-height); border-radius: var(--radius-pill); color: var(--color-muted); padding: 0 var(--space-3); font-size: 13px; }
@@ -2061,9 +2410,9 @@ textarea:focus-visible {
 .usTimelineSourceWarning .disclosureTrigger { gap: var(--space-2); }
 .usTimelinePage .notice span { overflow-wrap: anywhere; }
 .usTimelineList { display: grid; gap: 24px; }.usTimelineDateTitle { margin: 0 0 12px; font-size: 21px; }.usTimelineDay.focused .usTimelineDateTitle { color: var(--text); }
-.usEventCard { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 12px; align-items: start; }.usEventCard + .usEventCard { margin-top: 10px; }.usEventCard > time { padding-top: 13px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; text-align: right; }.usEventCard > time small { display: block; margin-top: 3px; font-size: 11px; }.usEventCard > div { background: #f6f7f8; border: 1px solid #edf0f2; border-radius: 14px; padding: 13px 15px; }.usEventCard.primary > div { border-color: #e5e8eb; }.usEventCard.compact > div { padding-block: 12px; }.usEventTitle { display: flex; align-items: center; gap: 8px; min-width: 0; }.usEventTitle strong { min-width: 0; overflow-wrap: anywhere; font-size: 17px; }.usEventState { margin-left: auto; flex: 0 0 auto; color: var(--muted); font-size: 11px; }.usEventState.scheduled { display: none; }.usEventState.released { color: var(--success); }.usEventState.revised { color: var(--warning); }.usEventState.cancelled { color: var(--danger); }.usEventSource { width: 28px; height: 28px; display: inline-grid; place-items: center; flex: 0 0 auto; margin-left: auto; border: 1px solid #dfe3e6; border-radius: 999px; color: var(--text); background: #fff; }.usEventSource:hover { color: var(--accent); border-color: var(--accent); }
-.usEventValues { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 12px 0 2px; }.usEventValues.count-1 { grid-template-columns: minmax(0, 180px); }.usEventValues.count-2 { grid-template-columns: repeat(2, minmax(0, 180px)); }.usEventValues span { display: grid; gap: 3px; color: var(--muted); font-size: 12px; }.usEventValues b { color: var(--text); font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }.usEventValues.policyFacts b { font-size: 17px; }.usEventContext { color: var(--muted); font-size: 12px; margin: 9px 0 0; }.usEventHistoricalPending { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 10px 0 0; }.usEventState.historical { display: inline; color: var(--warning); }.usEventCard a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 12px; font-weight: 700; white-space: nowrap; }
-@media (max-width: 680px) { .usTimelinePage { width: 100%; max-width: none; align-self: stretch; overflow-y: visible; padding: 10px 12px 32px; }.usTimelineHeader { grid-template-columns: 36px minmax(0, 1fr) 36px auto; margin-bottom: 12px; }.usTimelineHeader > .iconButton { width: 36px; height: 36px; }.usTimelineNow { min-width: 34px; padding: 0 4px; }.usTimelineDates { gap: 5px; overflow-x: auto; grid-template-columns: repeat(7, 64px); padding-bottom: 2px; }.usTimelineDates button { min-height: 68px; }.usTimelineFilters { margin-bottom: 20px; }.usTimelineFilterGroup { overflow-x: auto; }.usTimelineFilterGroup button { flex: 0 0 auto; }.usEventCard { grid-template-columns: 66px minmax(0, 1fr); gap: 8px; }.usEventCard > time { padding-top: 11px; font-size: 12px; }.usEventCard > div { padding: 12px; }.usEventTitle strong { font-size: 15px; }.usEventValues { gap: 8px; }.usEventValues.policyFacts { gap: 6px; }.usEventValues.policyFacts b { font-size: 13px; } }
+.usEventCard { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 12px; align-items: start; }.usEventCard + .usEventCard { margin-top: 12px; }.usEventCard > time { padding-top: 13px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; text-align: right; }.usEventCard > time small { display: block; margin-top: 3px; font-size: 11px; }.usEventCard > div { background: #f6f7f8; border: 1px solid #edf0f2; border-radius: 14px; padding: 13px 15px; }.usEventCard.primary > div { border-color: #e5e8eb; }.usEventCard.compact > div { padding-block: 12px; }.usEventTitle { display: flex; align-items: center; gap: 8px; min-width: 0; }.usEventTitle strong { min-width: 0; overflow-wrap: anywhere; font-size: 17px; }.usEventState { margin-left: auto; flex: 0 0 auto; color: var(--muted); font-size: 11px; }.usEventState.scheduled { display: none; }.usEventState.released { color: var(--success); }.usEventState.revised { color: var(--warning); }.usEventState.cancelled { color: var(--danger); }.usEventSource { width: 28px; height: 28px; display: inline-grid; place-items: center; flex: 0 0 auto; margin-left: auto; border: 1px solid #dfe3e6; border-radius: 999px; color: var(--text); background: #fff; }.usEventSource:hover { color: var(--accent); border-color: var(--accent); }
+.usEventValues { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 12px 0 2px; }.usEventValues.count-1 { grid-template-columns: minmax(0, 180px); }.usEventValues.count-2 { grid-template-columns: repeat(2, minmax(0, 180px)); }.usEventValues span { display: grid; gap: 3px; color: var(--muted); font-size: 12px; }.usEventValues b { color: var(--text); font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }.usEventValues.policyFacts b { font-size: 17px; }.usEventContext { color: var(--muted); font-size: 12px; margin: 8px 0 0; }.usEventHistoricalPending { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 12px 0 0; }.usEventState.historical { display: inline; color: var(--warning); }.usEventCard a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: 12px; font-weight: 700; white-space: nowrap; }
+@media (max-width: 680px) { .usTimelinePage { width: 100%; max-width: none; align-self: stretch; overflow-y: visible; padding: 12px 12px 32px; }.usTimelineHeader { grid-template-columns: 36px minmax(0, 1fr) 36px auto; margin-bottom: 12px; }.usTimelineHeader > .iconButton { width: 36px; height: 36px; }.usTimelineNow { min-width: 34px; padding: 0 4px; }.usTimelineDates { gap: 4px; overflow-x: auto; grid-template-columns: repeat(7, 64px); padding-bottom: 2px; }.usTimelineDates button { min-height: 68px; }.usTimelineFilters { margin-bottom: 20px; }.usTimelineFilterGroup { overflow-x: auto; }.usTimelineFilterGroup button { flex: 0 0 auto; }.usEventCard { grid-template-columns: 66px minmax(0, 1fr); gap: 8px; }.usEventCard > time { padding-top: 11px; font-size: 12px; }.usEventCard > div { padding: 12px; }.usEventTitle strong { font-size: 15px; }.usEventValues { gap: 8px; }.usEventValues.policyFacts { gap: 6px; }.usEventValues.policyFacts b { font-size: 13px; } }
 
 .usTimelinePage {
   padding: var(--space-5) var(--space-4) var(--space-7);
@@ -2281,7 +2630,7 @@ textarea:focus-visible {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
 }
 
 .marketAiHeader > div {
@@ -2441,7 +2790,7 @@ textarea:focus-visible {
 
 .marketAiSummary small {
   display: block;
-  margin-top: 5px;
+  margin-top: 4px;
   color: #6d7d90;
   font-size: 11px;
   font-weight: 800;
@@ -2696,7 +3045,7 @@ textarea:focus-visible {
   border: 1px solid #c9dfd5;
   border-radius: 12px;
   background: #f7fcf9;
-  padding: 14px;
+  padding: 16px;
 }
 
 .marketAiScenarioBoard {
@@ -2733,7 +3082,7 @@ textarea:focus-visible {
 .marketAiDirectionSummary > div:first-child > small { color: #6d7d90; font-size: 12px; }
 
 .marketAiDirectionSummary p {
-  margin: 5px 0 0;
+  margin: 4px 0 0;
   color: #425365;
   font-size: 14px;
   line-height: 1.5;
@@ -2745,7 +3094,7 @@ textarea:focus-visible {
   border: 1px solid #dce8e1;
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.88);
-  padding: 8px 10px;
+  padding: 8px 12px;
   text-align: right;
 }
 
@@ -2776,7 +3125,7 @@ textarea:focus-visible {
 
 .marketAiDirectionSummaryMet > b,
 .marketAiDirectionSummaryNext > b {
-  margin-right: 7px;
+  margin-right: 8px;
   color: #214d3b;
 }
 
@@ -2909,7 +3258,7 @@ textarea:focus-visible {
 .marketAiScenarioCandidateGrid,
 .marketAiScenarioStateGrid {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .marketAiScenarioBoardHeader {
@@ -2928,7 +3277,7 @@ textarea:focus-visible {
 .marketAiScenarioScoreMeaning,
 .marketAiScenarioCandidateGrid p,
 .marketAiScenarioLimitations p {
-  margin: 5px 0 0;
+  margin: 4px 0 0;
   color: #425365;
   font-size: 13px;
   line-height: 1.5;
@@ -2939,7 +3288,7 @@ textarea:focus-visible {
   min-width: 94px;
   border-radius: 10px;
   background: #fff;
-  padding: 8px 10px;
+  padding: 8px 12px;
   text-align: right;
 }
 
@@ -2977,7 +3326,7 @@ textarea:focus-visible {
   border: 1px solid #dce8e1;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.8);
-  padding: 10px;
+  padding: 12px;
 }
 
 .marketAiScenarioStateGrid strong,
@@ -2991,16 +3340,16 @@ textarea:focus-visible {
 }
 
 .marketAiScenarioStateGrid small {
-  margin-top: 5px;
+  margin-top: 4px;
   line-height: 1.45;
 }
 
 .marketAiScenarioLimitations {
-  margin-top: 10px;
+  margin-top: 12px;
   border: 1px dashed #d7b870;
   border-radius: 9px;
   background: #fff9e9;
-  padding: 8px 10px;
+  padding: 8px 12px;
 }
 
 .marketAiScenarioLimitations > strong,
@@ -3019,7 +3368,7 @@ textarea:focus-visible {
 
 .marketAiScenarioCandidateGrid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .marketAiScenarioCandidateGrid article.bullish { border-color: #a6dec1; }
@@ -3030,7 +3379,7 @@ textarea:focus-visible {
 
 .marketAiScenarioReadOnly {
   display: block;
-  margin-top: 10px;
+  margin-top: 12px;
   color: #6d7d90;
   font-size: 12px;
 }
@@ -3044,7 +3393,7 @@ textarea:focus-visible {
   cursor: pointer;
   border: 1px solid #dce8e1;
   border-radius: 9px;
-  padding: 9px 11px;
+  padding: 8px 11px;
   color: #425f76;
   font-weight: 800;
 }
@@ -3093,7 +3442,7 @@ textarea:focus-visible {
 .marketAiDecisionConditions p,
 .marketAiStructureWarning,
 .marketAiDecisionExplainer {
-  margin: 7px 0 0;
+  margin: 8px 0 0;
   color: #425365;
   font-size: 13px;
   line-height: 1.55;
@@ -3129,14 +3478,14 @@ textarea:focus-visible {
 }
 
 .marketAiDecisionConditions {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .marketAiDecisionConditions p {
   flex: 1 1 300px;
   margin: 0;
   border-left: 3px solid #a8cdbb;
-  padding-left: 9px;
+  padding-left: 8px;
 }
 
 .marketAiDecisionConditions p > span {
@@ -3185,7 +3534,7 @@ textarea:focus-visible {
 
 .marketAiConfidenceMeaning,
 .marketAiConfidenceSource {
-  margin: 7px 0 0;
+  margin: 8px 0 0;
   color: #65758a;
   font-size: 12px;
   line-height: 1.5;
@@ -3196,7 +3545,7 @@ textarea:focus-visible {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
   color: #425365;
 }
 
@@ -3206,9 +3555,9 @@ textarea:focus-visible {
 }
 
 .marketAiPeriodProvenance {
-  margin: 10px 0 0;
+  margin: 12px 0 0;
   border-left: 3px solid #9fc8df;
-  padding-left: 9px;
+  padding-left: 8px;
   color: #425f76;
   font-size: 12px;
   font-weight: 700;
@@ -3219,7 +3568,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .marketAiConfidenceStatusGrid article, .marketAiEvidenceGapGrid article {
@@ -3227,7 +3576,7 @@ textarea:focus-visible {
   border: 1px solid #dce8e1;
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.72);
-  padding: 9px 10px;
+  padding: 8px 12px;
 }
 
 .marketAiEvidenceGapGrid article.unavailable {
@@ -3261,7 +3610,7 @@ textarea:focus-visible {
 }
 
 .marketAiConfidenceStatusGrid small, .marketAiEvidenceGapGrid small {
-  margin-top: 5px;
+  margin-top: 4px;
 }
 
 .marketAiEvidenceGapGrid small b {
@@ -3317,7 +3666,7 @@ textarea:focus-visible {
 }
 
 .marketAiConfirmationLevelsHeader p {
-  margin: 5px 0 0;
+  margin: 4px 0 0;
   color: #53677c;
   font-size: 13px;
   line-height: 1.5;
@@ -3337,8 +3686,8 @@ textarea:focus-visible {
 .marketAiConfirmationCandidateGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 10px;
+  gap: 12px;
+  margin-top: 12px;
 }
 
 .marketAiConfirmationCandidateGrid article {
@@ -3361,7 +3710,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
-  column-gap: 10px;
+  column-gap: 12px;
 }
 
 .marketAiConfirmationCandidateHeader > span {
@@ -3388,8 +3737,8 @@ textarea:focus-visible {
 .marketAiConfirmationRequirements {
   display: grid;
   gap: 6px;
-  margin-top: 9px;
-  padding-top: 9px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid #e7eef0;
 }
 
@@ -3404,7 +3753,7 @@ textarea:focus-visible {
 }
 
 .marketAiCandidateGap {
-  margin: 9px 0 0;
+  margin: 8px 0 0;
   border-left: 3px solid #d9b46e;
   padding-left: 8px;
   color: #53677c;
@@ -3431,7 +3780,7 @@ textarea:focus-visible {
 
 .marketAiConfirmationStatus,
 .marketAiConfirmationInvalidation {
-  margin-top: 9px;
+  margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid #e7eef0;
 }
@@ -3458,7 +3807,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .marketAiStructureGrid article {
@@ -3466,7 +3815,7 @@ textarea:focus-visible {
   border: 1px solid #dce8e1;
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.72);
-  padding: 9px 10px;
+  padding: 8px 12px;
 }
 
 .marketAiStructureGrid article.up {
@@ -3506,7 +3855,7 @@ textarea:focus-visible {
 
 .marketAiStructureGrid em {
   display: block;
-  margin-top: 5px;
+  margin-top: 4px;
   color: #7b8796;
   font-size: 11px;
   font-style: normal;
@@ -3568,7 +3917,7 @@ textarea:focus-visible {
 .marketAiEvidence strong,
 .marketAiFollowup strong {
   display: block;
-  margin-top: 5px;
+  margin-top: 4px;
   color: #17202a;
   font-size: 18px;
   line-height: 1.3;
@@ -3605,7 +3954,7 @@ textarea:focus-visible {
 .marketAiSectionHeader {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   align-items: flex-start;
 }
 
@@ -3627,7 +3976,7 @@ textarea:focus-visible {
 .marketAiFact {
   min-width: 0;
   border-left: 3px solid #c8d8e6;
-  padding: 3px 0 3px 9px;
+  padding: 3px 0 3px 8px;
 }
 
 .marketAiFact span,
@@ -3680,7 +4029,7 @@ textarea:focus-visible {
   border: 1px solid #e0e8f1;
   border-radius: 10px;
   background: #fff;
-  padding: 12px 14px;
+  padding: 12px 16px;
 }
 
 .marketAiForecastCardHeader {
@@ -3705,7 +4054,7 @@ textarea:focus-visible {
   color: #53677c;
   font-size: 11px;
   font-weight: 800;
-  padding: 3px 7px;
+  padding: 3px 8px;
 }
 
 .marketAiForecastCard > strong {
@@ -3719,7 +4068,7 @@ textarea:focus-visible {
 }
 
 .marketAiForecastCard > p {
-  margin: 7px 0 0;
+  margin: 8px 0 0;
   color: #425365;
   font-size: 13px;
   line-height: 1.5;
@@ -3728,7 +4077,7 @@ textarea:focus-visible {
 
 .marketAiForecastCard > em {
   display: flex;
-  gap: 5px;
+  gap: 4px;
   min-height: calc(2 * 1.45em);
   margin: auto 0 0;
   padding-top: 8px;
@@ -3830,7 +4179,7 @@ textarea:focus-visible {
 .marketAiSourceList,
 .marketAiSupplementList {
   display: grid;
-  gap: 5px;
+  gap: 4px;
 }
 
 .marketAiSourceList a {
@@ -4033,7 +4382,7 @@ textarea:focus-visible {
 }
 
 .tradingStatsPanel {
-  padding: 8px 10px;
+  padding: 8px 12px;
 }
 
 .tradingStatsHeader,
@@ -4041,7 +4390,7 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -4090,12 +4439,12 @@ textarea:focus-visible {
 .tradingStatsGrid {
   display: grid;
   grid-template-columns: repeat(6, minmax(104px, 1fr));
-  gap: 5px;
+  gap: 4px;
   margin-top: 8px;
 }
 
 .tradingStatsPanel.compact {
-  padding: 8px 10px;
+  padding: 8px 12px;
 }
 
 .tradingStatsPanel.compact .tradingStatsGrid {
@@ -4143,7 +4492,7 @@ textarea:focus-visible {
 
 .tradingStatsDetail {
   min-width: 0;
-  padding: 8px 10px;
+  padding: 8px 12px;
 }
 
 .tradingDataMain {
@@ -4158,7 +4507,7 @@ textarea:focus-visible {
 
 .statPointList {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   margin-top: 8px;
   color: #607085;
   font-size: 12px;
@@ -4179,18 +4528,18 @@ textarea:focus-visible {
 .marketStats, .positionSummary, .llmSummary {
   display: grid;
   grid-template-columns: repeat(6, minmax(120px, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .marketStats {
   grid-template-columns: repeat(10, minmax(78px, 1fr));
-  gap: 5px;
+  gap: 4px;
   flex: 0 0 auto;
 }
 
 .positionSummary {
   grid-template-columns: repeat(6, minmax(100px, 1fr));
-  gap: 5px;
+  gap: 4px;
 }
 
 .positionPnlSummary {
@@ -4198,12 +4547,12 @@ textarea:focus-visible {
 }
 
 .positionPnlSummary .positionSummary {
-  padding: 10px 14px 4px;
+  padding: 12px 16px 4px;
 }
 
 .positionPnlSummaryFreshness {
   margin: 0;
-  padding: 4px 14px 10px;
+  padding: 4px 16px 12px;
   color: var(--color-muted);
   font-size: 12px;
   font-weight: 700;
@@ -4250,7 +4599,7 @@ textarea:focus-visible {
 .earnSummary {
   display: grid;
   grid-template-columns: repeat(6, minmax(110px, 1fr));
-  gap: 5px;
+  gap: 4px;
 }
 
 .earnControls {
@@ -4276,21 +4625,21 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: repeat(3, minmax(90px, 1fr));
   gap: 6px;
-  padding: 10px;
+  padding: 12px;
 }
 
 .earnApyStrip {
   display: grid;
   grid-template-columns: repeat(4, minmax(74px, 1fr));
   gap: 6px;
-  padding: 0 10px 10px;
+  padding: 0 12px 12px;
 }
 
 .earnApyPoint {
   border: 1px solid #e2e9f1;
   border-radius: 8px;
   background: #f8fafc;
-  padding: 7px;
+  padding: 8px;
 }
 
 .earnApyPoint span,
@@ -4339,7 +4688,7 @@ textarea:focus-visible {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 10px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -4357,6 +4706,52 @@ textarea:focus-visible {
 
 .cleanAutomationPage {
   gap: var(--space-3);
+}
+
+/* 编辑视图内容比视口高：container 链上都是 overflow:hidden，没有滚动区就会
+   把「止盈/止损/每日仓位/保存按钮」整块裁掉，看起来像样式错位。 */
+.cleanAutomationEditor {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: var(--space-4);
+  scrollbar-gutter: stable;
+}
+
+/* 面板默认会被 flex 压缩到容器高度，再被自身 overflow:hidden 裁掉下半截；
+   在编辑视图里让它保持自然高度，由外层滚动容器负责滚动。 */
+.cleanAutomationEditor > .cleanPanel {
+  flex: 0 0 auto;
+}
+
+/* 表单压缩后已不需要吸底；吸底在两种滚动模式下都会压住字段，直接去掉。 */
+
+/* 刷新账户金额是中性辅助操作，不能沿用危险色 .rowAction。 */
+.automationRefreshLink {
+  color: var(--color-muted-strong);
+  font-weight: 800;
+  font-size: 12px;
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.automationRefreshLink:not(:disabled):hover {
+  color: var(--color-text);
+}
+
+.cleanAutomationEditor .cleanCreateFooter {
+  padding: 8px 12px;
+}
+
+@media (max-width: 900px) {
+  .automationTripleRow {
+    grid-template-columns: 1fr;
+  }
+
+  .automationNumberRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .cleanAutomationHeader h1 {
@@ -4400,6 +4795,18 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+/* 结论文案下的一行轻提示（未启用策略时引导去策略页）。 */
+.cleanDecisionHint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--color-muted-strong);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .cleanDecisionPanel {
@@ -4449,7 +4856,9 @@ textarea:focus-visible {
   min-width: 0;
   overflow: hidden;
   display: grid;
-  grid-template-columns: repeat(4, minmax(78px, 1fr));
+  /* 列数跟着指标数量走，避免指标少于 4 个时右侧留空。 */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(90px, 1fr);
   gap: 1px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
@@ -4459,7 +4868,7 @@ textarea:focus-visible {
 .cleanInlineMetric {
   min-width: 0;
   background: rgba(248, 250, 252, 0.78);
-  padding: 7px 9px;
+  padding: 8px 8px;
 }
 
 .cleanInlineMetric span,
@@ -4487,7 +4896,7 @@ textarea:focus-visible {
 .cleanMetricStrip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 5px;
+  gap: 4px;
 }
 
 .cleanMetricStrip.compact {
@@ -4545,7 +4954,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: 9px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   border-bottom: 1px solid var(--color-border);
   padding: 8px 0;
 }
@@ -4595,6 +5004,128 @@ textarea:focus-visible {
   background: var(--color-danger);
 }
 
+/* 自动化总览：起步引导、检查分组与带下一步的空状态。
+   表面、圆角、颜色与间距全部复用 cleanPanel 与全局令牌，只补充局部布局。 */
+.automationOnboarding {
+  padding: 12px 12px;
+}
+
+.automationOnboardingBody {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.automationOnboardingBody h2 {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.automationOnboardingBody h2 {
+  margin: 2px 0 0;
+  font-size: 15px;
+}
+
+.automationOnboardingBody p {
+  max-width: 860px;
+  margin: 4px 0 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.automationOnboardingSteps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.automationOnboardingStep {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.automationOnboardingStep strong,
+.automationOnboardingStep small {
+  display: block;
+  min-width: 0;
+}
+
+.automationOnboardingStep strong {
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.automationOnboardingStep small {
+  margin-top: var(--space-1);
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.automationStepIndex {
+  flex: 0 0 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+  color: var(--color-text-soft);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.automationCheckGroupLabel {
+  padding: var(--space-2) 0 var(--space-1);
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.automationCheckToggle {
+  margin: var(--space-2) 0;
+}
+
+.emptyRow.compact.automationEmptyState {
+  margin: var(--space-3) 0;
+  padding: var(--space-4) var(--space-3);
+  text-align: left;
+}
+
+.automationEmptyState strong,
+.automationEmptyState small {
+  display: block;
+  min-width: 0;
+}
+
+.automationEmptyState strong {
+  color: var(--color-text-soft);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.automationEmptyState small {
+  margin-top: var(--space-1);
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.automationEmptyState .rowAction {
+  margin-top: var(--space-2);
+}
+
 .cleanTag {
   display: inline-flex;
   align-items: center;
@@ -4604,7 +5135,7 @@ textarea:focus-visible {
   border-radius: var(--radius-pill);
   background: var(--color-surface-muted);
   color: var(--color-muted-strong);
-  padding: 0 7px;
+  padding: 0 8px;
   font-size: 11px;
   font-weight: 900;
   white-space: nowrap;
@@ -4655,6 +5186,65 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+/* 只提醒警示放在吸底栏里，既不会被吸底遮挡，也始终可见。 */
+.cleanCreateFooter .automationFooterWarn {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-warning);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.cleanAutomationView .cleanStrategyDetail {
+  padding: 12px 12px;
+  gap: 8px;
+}
+
+/* 活跃策略头部：名称与状态徽章同一行，合约/周期信息单独一行。 */
+.cleanStrategyHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 12px;
+}
+
+.cleanStrategyTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cleanStrategyTitle strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.cleanStrategyMeta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cleanAutomationView .cleanStrategyDetail .cleanMetricStrip.compact {
+  gap: 8px;
+}
+
 .cleanStrategyHero strong,
 .cleanCreateFooter strong {
   color: var(--color-text);
@@ -4677,16 +5267,231 @@ textarea:focus-visible {
   gap: 8px;
 }
 
+/* 编辑/运行为次按钮、启动为主按钮，统一到标准高度消除 36/40px 错位。 */
 .cleanActionRow .primaryButton,
 .cleanActionRow .secondaryButton {
-  min-height: 34px;
+  height: var(--control-height);
+  min-height: var(--control-height);
+}
+
+/* 活跃策略页头「新建策略 / 全部策略」等高。 */
+.strategyHeaderActions > button {
+  height: var(--control-height);
+  min-height: var(--control-height);
 }
 
 .cleanStrategyForm {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  padding: 12px;
+  gap: 8px 12px;
+  padding: 8px 12px;
+}
+
+/* 判断方式 / 执行方式 / 信号周期 三列一行，省下一整行高度。 */
+.automationTripleRow {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+/* 四个数字字段（张数 / 持仓 / 止盈 / 止损）并成一行，比两行更省高度。 */
+.automationNumberRow {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.cleanStrategyForm .fieldBlock {
+  gap: 4px;
+}
+
+/* 字段说明收进 ⓘ：hover / 聚焦才展开，省掉常驻的多行小字。 */
+.fieldHintIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.fieldHintIcon:hover,
+.fieldHintIcon:focus-visible {
+  color: var(--color-text);
+  border-color: var(--color-muted);
+  outline: none;
+}
+
+.automationInstrumentToggle {
+  margin-left: 6px;
+  min-width: 0;
+  height: 18px;
+  padding: 0 4px;
+  color: var(--color-muted-strong);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+/* 名称、信号周期、每日仓位这类「一行读完 + 带多行说明」的字段独占整行，
+   否则说明文字会被挤在半个列宽里堆成小字块，把相邻字段顶得高低不齐。 */
+.cleanStrategyForm > .automationNameField,
+.cleanStrategyForm > .automationBarField,
+.cleanStrategyForm > .automationDailyField {
+  grid-column: 1 / -1;
+}
+
+.automationDailyField .mantine-TextInput-root {
+  max-width: 220px;
+}
+
+.automationDailyField .automationEquityHint {
+  margin-top: 2px;
+}
+
+.automationCapNote {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .cleanStrategyForm {
+    grid-template-columns: 1fr;
+  }
+}
+
+.automationInstrumentField {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.automationInstrumentChips,
+.automationInstrumentQuick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+}
+
+.automationInstrumentChip,
+.automationInstrumentOption {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-text-soft);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.automationInstrumentChip.selected,
+.automationInstrumentOption.selected {
+  border-color: var(--color-success-border);
+  background: var(--color-success-soft);
+  color: var(--color-success-strong);
+}
+
+.automationInstrumentChip:hover,
+.automationInstrumentOption:hover {
+  border-color: var(--color-primary-hover);
+}
+
+.automationInstrumentChip:focus-visible,
+.automationInstrumentOption:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.automationInstrumentChip span[aria-hidden] {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.automationInstrumentEmpty {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.automationInstrumentAddRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.automationInstrumentAddRow .mantine-TextInput-root {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.automationEquityHint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 12px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.automationEquityHint strong {
+  color: var(--color-text-soft);
+  font-weight: 800;
+}
+
+.automationEquityHint.warn,
+.automationEquityWarn {
+  color: var(--color-danger);
+  font-weight: 700;
+}
+
+.automationEquityMeta {
+  color: var(--color-muted);
+  font-weight: 500;
+}
+
+.automationFormHintRow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 0 12px 4px;
+}
+
+.automationFormHintRow > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.automationFormHintRow .rowAction {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .automationInstrumentChip,
+  .automationInstrumentOption {
+    transition: none;
+  }
 }
 
 .cleanStrategyForm select {
@@ -4696,7 +5501,7 @@ textarea:focus-visible {
   border-radius: var(--radius-control);
   background: var(--color-surface);
   color: var(--color-text);
-  padding: 0 10px;
+  padding: 0 12px;
   font: inherit;
   font-size: 13px;
   font-weight: 800;
@@ -4724,9 +5529,9 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   border-top: 1px solid #edf1f6;
-  padding: 6px 10px;
+  padding: 6px 12px;
   color: var(--color-muted-strong);
   font-size: 12px;
   font-weight: 900;
@@ -4764,7 +5569,7 @@ textarea:focus-visible {
 .rowActions {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
   overflow: visible;
 }
@@ -4880,10 +5685,10 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface-muted);
-  padding: 0 14px;
+  padding: 0 16px;
 }
 
 .signalLogMinimalPanelHeader div {
@@ -4926,7 +5731,7 @@ textarea:focus-visible {
 .signalLogTable th,
 .signalLogTable td {
   border-bottom: 1px solid #edf1f6;
-  padding: 10px 14px;
+  padding: 12px 16px;
   text-align: left;
   vertical-align: middle;
 }
@@ -5033,7 +5838,7 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-pill);
   background: var(--color-surface-muted);
@@ -5046,7 +5851,7 @@ textarea:focus-visible {
 .signalLogActionTag,
 .signalLogDecisionTag {
   min-height: 28px;
-  padding: 0 10px;
+  padding: 0 12px;
 }
 
 .signalLogActionTag.up,
@@ -5085,7 +5890,7 @@ textarea:focus-visible {
   height: 30px;
   border-radius: var(--radius-control);
   cursor: pointer;
-  padding: 0 10px;
+  padding: 0 12px;
 }
 
 .signalLogIconButton {
@@ -5131,7 +5936,7 @@ textarea:focus-visible {
 .minimalDataTable th,
 .minimalDataTable td {
   border-bottom: 1px solid #edf1f6;
-  padding: 10px 14px;
+  padding: 12px 16px;
   text-align: left;
   vertical-align: middle;
 }
@@ -5346,13 +6151,13 @@ textarea:focus-visible {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
   background: var(--color-surface);
-  padding: 10px;
+  padding: 12px;
 }
 
 .inlineDetailPanel {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .inlineDetailMetrics {
@@ -5366,7 +6171,7 @@ textarea:focus-visible {
   border-radius: var(--radius-panel);
   background: #fff7f8;
   color: var(--color-danger);
-  padding: 9px;
+  padding: 8px;
 }
 
 .inlineDetailText strong {
@@ -5407,7 +6212,7 @@ textarea:focus-visible {
   background: var(--color-surface);
   color: var(--color-text);
   outline: 0;
-  padding: 0 9px;
+  padding: 0 8px;
   font-size: 13px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
@@ -5468,10 +6273,10 @@ textarea:focus-visible {
   min-height: 0;
   overflow: auto;
   flex: 1 1 auto;
-  padding: 10px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .signalDetailHero {
@@ -5483,8 +6288,8 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 10px;
+  gap: 12px;
+  padding: 12px;
 }
 
 .signalDetailHero.up {
@@ -5574,7 +6379,7 @@ textarea:focus-visible {
   border: 1px solid #dce5ef;
   border-radius: var(--radius-panel);
   background: var(--color-surface);
-  padding: 10px;
+  padding: 12px;
 }
 
 .signalReasonBox strong,
@@ -5607,7 +6412,7 @@ textarea:focus-visible {
 .riskSnapshotChecks {
   display: grid;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .riskSnapshotCheck {
@@ -5615,7 +6420,7 @@ textarea:focus-visible {
   border: 1px solid #e2e9f1;
   border-radius: var(--radius-control);
   background: var(--color-surface);
-  padding: 8px 9px;
+  padding: 8px 8px;
 }
 
 .riskSnapshotCheck strong,
@@ -5658,7 +6463,7 @@ textarea:focus-visible {
   border: 1px solid #e2e9f1;
   border-radius: var(--radius-control);
   background: var(--color-surface);
-  padding: 8px 9px;
+  padding: 8px 8px;
 }
 
 .executionStepHeader {
@@ -5690,7 +6495,7 @@ textarea:focus-visible {
 }
 
 .executionStepItem small {
-  margin-top: 5px;
+  margin-top: 4px;
   color: var(--color-muted);
   font-size: 11px;
   line-height: 1.4;
@@ -5702,7 +6507,7 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 8px;
 }
 
@@ -5801,10 +6606,10 @@ textarea:focus-visible {
   border: 1px solid #cfe2f5;
   border-radius: var(--radius-panel);
   background: #f7fbff;
-  padding: 10px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
 }
 
 .aiAnalysisPanel.failed {
@@ -5816,7 +6621,7 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
 }
 
 .aiAnalysisHeader div {
@@ -5863,7 +6668,7 @@ textarea:focus-visible {
   padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 
 .aiList.risks {
@@ -5888,14 +6693,90 @@ textarea:focus-visible {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(360px, 520px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.85fr);
   gap: 8px;
 }
 
 .llmConfigPanel,
-.llmPreviewPanel {
+.llmStatusPanel {
   min-width: 0;
   min-height: 0;
+}
+
+.llmStatusBody {
+  min-height: 0;
+  overflow: auto;
+  flex: 1 1 auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.llmCheckList {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.llmCheckItem {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  font-size: 13px;
+}
+
+.llmCheckDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-muted);
+}
+
+.llmCheckItem.ok .llmCheckDot {
+  background: var(--color-success);
+}
+
+.llmCheckItem.todo .llmCheckDot {
+  background: var(--color-warning);
+}
+
+.llmCheckLabel {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.llmCheckValue {
+  color: var(--color-muted-strong);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.llmReadiness {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  font-weight: 700;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+}
+
+.llmReadiness.ok {
+  background: var(--color-success-soft);
+  color: var(--color-success-strong);
+  border-color: var(--color-success-border);
+}
+
+.llmReadiness.warn {
+  background: var(--color-warning-soft);
+  color: var(--color-warning-strong);
+  border-color: var(--color-warning-border);
 }
 
 .llmForm {
@@ -5954,7 +6835,7 @@ textarea:focus-visible {
   background: var(--color-surface);
   color: var(--color-text);
   outline: 0;
-  padding: 8px 9px;
+  padding: 8px 8px;
   resize: vertical;
   line-height: 1.45;
 }
@@ -5970,45 +6851,45 @@ textarea:focus-visible {
   gap: 8px;
 }
 
-.llmFlow {
-  min-height: 0;
-  overflow: auto;
-  flex: 1 1 auto;
-  padding: 10px;
-  display: grid;
-  gap: 8px;
-  align-content: start;
-}
-
-.llmFlow div {
-  min-width: 0;
-  border: 1px solid #dce5ef;
-  border-radius: var(--radius-panel);
-  background: var(--color-surface);
-  padding: 10px;
-}
-
-.llmFlow strong,
-.llmFlow span {
-  display: block;
-  min-width: 0;
-}
-
-.llmFlow strong {
-  color: var(--color-text);
-  font-weight: 900;
-}
-
-.llmFlow span {
-  margin-top: 4px;
-  color: var(--color-muted);
-  font-size: 12px;
-  font-weight: 750;
-  line-height: 1.45;
+/* 两个保存按钮等高，避免次按钮(36px)与主按钮(40px)底部错位。 */
+.llmActions > button {
+  height: var(--control-height-lg);
+  min-height: var(--control-height-lg);
 }
 
 .testResult {
-  margin: 10px;
+  margin: 12px;
+}
+
+.llmAdvancedDisclosure {
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+}
+
+.llmAdvancedDisclosure > .disclosureTrigger {
+  width: 100%;
+  color: var(--color-text-soft);
+  font-size: 13px;
+  font-weight: 700;
+  gap: var(--space-2);
+}
+
+.llmAdvancedDisclosure > .disclosureTrigger::after {
+  content: "+";
+  margin-left: auto;
+  font-weight: 900;
+}
+
+.llmAdvancedDisclosure[data-expanded] > .disclosureTrigger::after {
+  content: "\2212";
+}
+
+.llmAdvancedDisclosure > .disclosureBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
 }
 
 .tradeTicketSection {
@@ -6025,9 +6906,9 @@ textarea:focus-visible {
 }
 
 .tradeFacts {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
   padding: 0;
   color: #657487;
   font-size: 12px;
@@ -6061,17 +6942,19 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  min-height: 42px;
+  gap: var(--space-2);
+  min-height: 34px;
   border-radius: var(--radius-control);
   background: var(--color-surface-muted);
-  padding: 6px 8px;
+  padding: var(--space-1) var(--space-2);
 }
 
 .leverageMeta > span {
   min-width: 0;
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
 }
 
 .leverageMeta strong,
@@ -6100,7 +6983,7 @@ textarea:focus-visible {
   border-radius: 999px;
   background: var(--color-success-soft);
   color: var(--color-success-strong);
-  padding: 2px 7px;
+  padding: 2px 8px;
   font-size: 11px;
   font-style: normal;
   font-weight: 900;
@@ -6147,7 +7030,7 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
 }
 
 .advancedOrderType {
@@ -6161,13 +7044,13 @@ textarea:focus-visible {
   min-height: 28px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   border: 0;
   border-radius: var(--radius-control);
   background: var(--color-surface-muted);
   color: var(--color-muted-strong);
   cursor: pointer;
-  padding: 0 9px;
+  padding: 0 8px;
   font-size: 12px;
   font-weight: 900;
 }
@@ -6180,14 +7063,14 @@ textarea:focus-visible {
 .tradePreviewStack {
   min-width: 0;
   display: grid;
-  gap: 5px;
+  gap: 4px;
 }
 
 .fieldBlock {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 
 .fieldBlock > span {
@@ -6215,8 +7098,19 @@ textarea:focus-visible {
   background: var(--color-surface);
   color: var(--color-text);
   outline: 0;
-  padding: 0 9px;
+  padding: 0 8px;
   font-variant-numeric: tabular-nums;
+}
+
+/* Mantine TextInput 注入的 .mantine-Input-input（size=sm）同时设置了
+   height 与 min-height（var(--input-size)/--input-height，均为 36px）。
+   仅覆盖 height 无效——min-height 会继续把输入框撑到 36px，与同行的
+   size=xs 按钮（34px）差 2px。这里同时覆盖两者，统一到标准控件 34px。 */
+.fieldBlock .mantine-Input-input,
+.fieldWithAction .mantine-Input-input {
+  height: var(--control-height);
+  min-height: var(--control-height);
+  box-sizing: border-box;
 }
 
 .fieldBlock select {
@@ -6228,7 +7122,7 @@ textarea:focus-visible {
   background: var(--color-surface);
   color: var(--color-text);
   outline: 0;
-  padding: 0 34px 0 9px;
+  padding: 0 34px 0 8px;
   font-weight: 800;
 }
 
@@ -6280,7 +7174,7 @@ textarea:focus-visible {
   grid-template-columns: minmax(0, 1fr) auto 18px;
   gap: 8px;
   align-items: center;
-  padding: 7px 9px;
+  padding: 8px 8px;
   text-align: left;
   box-shadow: var(--shadow-card);
 }
@@ -6342,7 +7236,7 @@ textarea:focus-visible {
   padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
 }
 
 .contractPickerSearch {
@@ -6388,7 +7282,7 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   color: #738397;
   font-size: 12px;
   font-weight: 700;
@@ -6400,7 +7294,7 @@ textarea:focus-visible {
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   padding-right: 2px;
 }
 
@@ -6415,9 +7309,9 @@ textarea:focus-visible {
   cursor: pointer;
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(74px, 0.65fr) auto 18px;
-  gap: 7px;
+  gap: 8px;
   align-items: center;
-  padding: 7px 8px;
+  padding: 8px 8px;
   text-align: left;
 }
 
@@ -6456,10 +7350,12 @@ textarea:focus-visible {
   color: #0d9f65;
 }
 
+/* 分段控件：保留 Mantine SegmentedControl 原生的 flex 布局。
+   之前这里用 display:grid 覆盖了 root，破坏了 indicator（选中白色块）的绝对定位参照，
+   导致选中块比按钮格窄、右边缘出现斜切缺口、底部悬空露出灰底——即"样式变形"。
+   fullWidth 时 Mantine 让每个 label flex:1 等宽，indicator 会自动铺满选中格。 */
 .segmentedButtons {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
-  gap: 5px;
+  min-width: 0;
 }
 
 .segmentedButtons button,
@@ -6484,7 +7380,7 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
   line-height: 1;
   white-space: nowrap;
 }
@@ -6525,12 +7421,12 @@ textarea:focus-visible {
 .fieldWithAction {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px;
+  gap: 4px;
 }
 
 .fieldWithAction button {
   height: var(--control-height);
-  padding: 0 10px;
+  padding: 0 12px;
   color: var(--color-success-strong);
   font-size: 12px;
   font-weight: 800;
@@ -6714,7 +7610,7 @@ textarea:focus-visible {
 }
 
 .announcementTypePanel .panelHeader {
-  padding: 8px 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid #e2e9f1;
 }
 
@@ -6735,7 +7631,7 @@ textarea:focus-visible {
   background: var(--color-surface-muted);
   color: var(--color-muted-strong);
   cursor: pointer;
-  padding: 7px 10px;
+  padding: 8px 12px;
   text-align: left;
 }
 
@@ -6768,11 +7664,11 @@ textarea:focus-visible {
   min-height: 48px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
   border-bottom: 1px solid #e2e9f1;
   background: #fbfdff;
-  padding: 8px 10px;
+  padding: 8px 12px;
 }
 
 .announcementListHeader strong,
@@ -6844,10 +7740,10 @@ textarea:focus-visible {
   min-height: 58px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(210px, 0.48fr) 74px;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
   border-bottom: 1px solid #edf1f6;
-  padding: 9px 12px;
+  padding: 8px 12px;
 }
 
 .announcementRow:hover {
@@ -6899,7 +7795,7 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-control);
   background: var(--color-surface);
@@ -6994,7 +7890,7 @@ textarea:focus-visible {
   border-radius: var(--radius-panel);
   background: rgba(255, 255, 255, 0.66);
   box-shadow: var(--shadow-card);
-  padding: 10px;
+  padding: 12px;
 }
 
 .radarPageCompact .radarControls {
@@ -7059,7 +7955,7 @@ textarea:focus-visible {
   background: var(--color-surface-muted);
   color: var(--color-muted-strong);
   cursor: pointer;
-  padding: 0 10px;
+  padding: 0 12px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
@@ -7077,7 +7973,7 @@ textarea:focus-visible {
 .radarInput {
   min-width: 0;
   display: grid;
-  gap: 5px;
+  gap: 4px;
 }
 
 .radarPageCompact .radarInput {
@@ -7095,7 +7991,7 @@ textarea:focus-visible {
   background: var(--color-surface);
   color: var(--color-text);
   box-shadow: inset 0 0 0 1px rgba(104, 120, 138, 0.16);
-  padding: 0 10px;
+  padding: 0 12px;
 }
 
 .radarPageCompact .filterGroup button,
@@ -7111,7 +8007,7 @@ textarea:focus-visible {
   border-radius: var(--radius-panel);
   background: var(--color-surface);
   box-shadow: var(--shadow-panel);
-  padding: 9px 12px;
+  padding: 8px 12px;
   display: grid;
   grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.6fr);
   gap: 12px;
@@ -7119,12 +8015,14 @@ textarea:focus-visible {
 }
 
 .radarPageCompact .radarAnalysisPanel {
-  padding: 8px 10px;
+  padding: 8px 12px;
   gap: 8px;
 }
 
 .radarPageCompact .radarAnalysisPanel.ready {
   grid-template-columns: minmax(220px, 0.55fr) minmax(0, 1fr);
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.05), rgba(59, 130, 246, 0.015));
+  box-shadow: var(--shadow-panel), inset 3px 0 0 rgba(59, 130, 246, 0.55);
 }
 
 .radarPageCompact .radarAnalysisPanel.compactState {
@@ -7136,11 +8034,112 @@ textarea:focus-visible {
   box-shadow: none;
 }
 
+.radarPageCompact .radarAnalysisPanel.setup {
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel), inset 3px 0 0 rgba(240, 180, 80, 0.75);
+}
+
+.radarAnalysisSetup {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-control);
+  background: #fffaf0;
+  box-shadow: inset 0 0 0 1px rgba(240, 180, 80, 0.2);
+}
+
+.radarSetupIcon {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: #a15c10;
+  background: rgba(240, 180, 80, 0.22);
+}
+
+.radarSetupBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.radarSetupBody > strong {
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1.3;
+}
+
+.radarSetupBody > p {
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.radarSetupSteps {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 3px;
+  color: var(--color-text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.radarSetupSteps li::marker {
+  color: #a15c10;
+  font-weight: 800;
+}
+
+.radarSetupHint {
+  margin: 2px 0 0;
+  color: #a15c10;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.radarSetupActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.radarSetupNote {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.radarAnalysisSourceTag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--color-muted);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
 .radarBriefHero {
   min-width: 0;
   display: grid;
   align-content: start;
-  gap: 5px;
+  gap: 4px;
 }
 
 .radarPageCompact .radarBriefHero {
@@ -7184,9 +8183,12 @@ textarea:focus-visible {
   overflow: hidden;
 }
 
-.radarPageCompact .radarBriefHero p,
+.radarPageCompact .radarBriefHero p {
+  -webkit-line-clamp: 3;
+}
+
 .radarPageCompact .radarBriefCard p {
-  -webkit-line-clamp: 1;
+  -webkit-line-clamp: 2;
 }
 
 .radarBriefMeta {
@@ -7210,11 +8212,11 @@ textarea:focus-visible {
   min-width: 0;
   border-radius: var(--radius-control);
   background: var(--color-surface-muted);
-  padding: 9px 10px;
+  padding: 8px 12px;
 }
 
 .radarPageCompact .radarBriefCard {
-  padding: 7px 9px;
+  padding: 8px 8px;
 }
 
 .radarBriefCard span {
@@ -7226,7 +8228,7 @@ textarea:focus-visible {
 }
 
 .radarBriefCard p {
-  margin: 5px 0 0;
+  margin: 4px 0 0;
   color: var(--color-text);
   font-size: 13px;
   line-height: 1.45;
@@ -7249,7 +8251,7 @@ textarea:focus-visible {
   background: #fffaf0;
   color: #a15c10;
   box-shadow: inset 0 0 0 1px rgba(240, 180, 80, 0.2);
-  padding: 5px 8px;
+  padding: 4px 8px;
   font-size: 12px;
   font-weight: 800;
   line-height: 1.3;
@@ -7258,7 +8260,7 @@ textarea:focus-visible {
 
 .radarPageCompact .radarBriefWarning {
   min-height: 24px;
-  padding: 4px 7px;
+  padding: 4px 8px;
 }
 
 .radarBriefWarning span,
@@ -7266,6 +8268,297 @@ textarea:focus-visible {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.radarBriefSentiment {
+  grid-column: 1 / -1;
+  min-width: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  padding: 8px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.radarPageCompact .radarBriefSentiment {
+  padding: 8px 8px;
+  gap: 4px;
+}
+
+.radarSentimentHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.radarSentimentTag {
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.2;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.radarSentimentTag.bull {
+  color: #c0392b;
+  background: rgba(192, 57, 43, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(192, 57, 43, 0.25);
+}
+
+.radarSentimentTag.bear {
+  color: #1e8e3e;
+  background: rgba(30, 142, 62, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(30, 142, 62, 0.25);
+}
+
+.radarSentimentTag.neutral {
+  color: var(--color-muted);
+  background: rgba(120, 120, 120, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(120, 120, 120, 0.2);
+}
+
+.radarSentimentMetrics {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.radarPageCompact .radarSentimentMetrics {
+  gap: 6px;
+}
+
+.radarSentimentMetric {
+  min-width: 0;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  padding: 8px 8px;
+}
+
+.radarSentimentMetric span {
+  display: block;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.radarSentimentMetric p {
+  margin: 4px 0 0;
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.radarSentimentBar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--color-border);
+}
+
+.radarSentimentBar span {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  transition: width 0.2s ease;
+}
+
+.radarSentimentBar .bull {
+  background: var(--color-danger);
+}
+
+.radarSentimentBar .bear {
+  background: var(--color-success);
+}
+
+.radarSentimentBar .neu {
+  background: var(--color-muted);
+  opacity: 0.35;
+}
+
+.radarBiasTag,
+.radarDirectionTag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.6;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.radarBiasTag.bull,
+.radarDirectionTag.bull {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger-border);
+}
+.radarBiasTag.bear,
+.radarDirectionTag.bear {
+  color: var(--color-success-strong);
+  background: var(--color-success-soft);
+  border-color: var(--color-success-border);
+}
+.radarBiasTag.neutral,
+.radarDirectionTag.neutral {
+  color: var(--color-muted);
+  background: var(--color-surface-muted);
+  border-color: var(--color-border);
+}
+.radarRowDir {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.4;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.radarRowDir.bull {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border-color: var(--color-danger-border);
+}
+.radarRowDir.bear {
+  color: var(--color-success-strong);
+  background: var(--color-success-soft);
+  border-color: var(--color-success-border);
+}
+.radarRowDir.neutral {
+  color: var(--color-muted);
+  background: var(--color-surface-muted);
+  border-color: var(--color-border);
+}
+
+.radarRowAi {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.14);
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+.radarBriefWatchlist .radarWatchlistItems {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.radarWatchlistItems li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.radarWatchInst {
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--color-text);
+}
+.radarWatchEntry {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--color-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.radarWatchEmpty {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.radarBriefWatchlistFull {
+  grid-column: 1 / -1;
+  min-width: 0;
+  border-radius: var(--radius-control);
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.07), rgba(59, 130, 246, 0.02));
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.2);
+  padding: 8px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.radarPageCompact .radarBriefWatchlistFull {
+  padding: 8px 8px;
+  gap: 4px;
+}
+
+.radarWatchHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.radarWatchHint {
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.radarBriefWatchlistFull .radarWatchlistItems li {
+  align-items: center;
+  padding: 4px 8px;
+  border-left: 2px solid transparent;
+}
+
+.radarBriefWatchlistFull .radarWatchEntry {
+  flex: 1 1 auto;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.radarBriefWatchlistFull .radarWatchlistItems li.radarWatchSelected {
+  border-left-color: rgba(59, 130, 246, 0.55);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+}
+
+.radarWatchSelectedTag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.14);
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.radarBriefDisclaimer {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.radarBriefDisclaimer svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
 }
 
 .radarBriefState {
@@ -7280,6 +8573,42 @@ textarea:focus-visible {
   background: var(--color-surface-muted);
   font-size: 13px;
   font-weight: 800;
+}
+
+.radarBriefLoading {
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 12px 12px;
+  color: var(--color-text);
+  text-align: left;
+}
+
+.radarPageCompact .radarBriefLoading {
+  min-height: 48px;
+  padding: 8px 12px;
+  gap: 8px;
+}
+
+.radarBriefLoadingText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.radarBriefLoadingText strong {
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1.3;
+}
+
+.radarBriefLoadingText small {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .radarPageCompact .radarAnalysisPanel.compactState .radarBriefState {
@@ -7412,15 +8741,32 @@ textarea:focus-visible {
 
 .radarPageCompact .panelHeader {
   min-height: 32px;
-  padding: 6px 10px;
+  padding: 6px 12px;
 }
 
 .radarTableHeader,
 .radarRow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 58px 122px;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 58px 44px 122px;
+  gap: 12px;
   align-items: center;
+}
+
+/* The direction badge is optional, so pin the last two cells explicitly to
+   keep the turnover column aligned even when a row has no direction value. */
+.radarRow > .radarRowDir {
+  grid-column: 3;
+  justify-self: center;
+}
+
+.radarRow > span:last-child,
+.radarTableHeader > span:last-child {
+  grid-column: 4;
+  text-align: right;
+}
+
+.radarTableHeader > span:nth-child(3) {
+  text-align: center;
 }
 
 .radarTableHeader {
@@ -7449,7 +8795,7 @@ textarea:focus-visible {
   background: var(--color-surface);
   color: var(--color-text);
   cursor: pointer;
-  padding: 9px 12px;
+  padding: 8px 12px;
   text-align: left;
   box-shadow: inset 0 -1px 0 rgba(226, 233, 241, 0.64);
 }
@@ -7492,18 +8838,42 @@ textarea:focus-visible {
 }
 
 .radarScore {
-  width: 42px;
-  height: 30px;
+  width: 54px;
+  min-height: 40px;
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 3px;
   border-radius: var(--radius-control);
   background: #eef4fa;
   font-weight: 850;
 }
 
+.radarScore strong {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.radarScoreHeat {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.1);
+  overflow: hidden;
+}
+
+.radarScoreHeat > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.9;
+}
+
 .radarPageCompact .radarScore {
-  height: 28px;
+  width: 52px;
+  min-height: 38px;
 }
 
 .radarScore.up,
@@ -7522,7 +8892,7 @@ textarea:focus-visible {
 }
 
 .radarDetailPanel {
-  padding: 14px;
+  padding: 16px;
   overflow: auto;
 }
 
@@ -7769,7 +9139,7 @@ textarea:focus-visible {
 
 .radarPageCompact .metric {
   min-height: 40px;
-  padding: 5px 8px;
+  padding: 4px 8px;
 }
 
 .radarEntryPanel {
@@ -7782,7 +9152,7 @@ textarea:focus-visible {
 
 .radarPageCompact .radarEntryPanel {
   margin-top: 8px;
-  padding: 10px 12px;
+  padding: 12px 12px;
 }
 
 .radarEntryPanel.up {
@@ -7799,7 +9169,7 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
 }
 
 .radarEntryPanel span,
@@ -7822,7 +9192,7 @@ textarea:focus-visible {
 }
 
 .radarPageCompact .radarEntryPanel p {
-  margin: 5px 0;
+  margin: 4px 0;
   line-height: 1.4;
 }
 
@@ -7850,9 +9220,80 @@ textarea:focus-visible {
 .radarPageCompact .radarEntryPanel .radarMarketConditionNote {
   display: -webkit-box;
   overflow: hidden;
-  margin-top: 5px;
+  margin-top: 4px;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
+}
+
+.radarTradeRef {
+  border-radius: var(--radius-panel);
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px rgba(104, 120, 138, 0.16), 0 6px 18px rgba(15, 23, 42, 0.06);
+}
+
+.radarPageCompact .radarTradeRef {
+  margin-top: 8px;
+  padding: 12px 12px;
+}
+
+.radarTradeRef.bull {
+  border-left: 3px solid var(--color-danger);
+}
+
+.radarTradeRef.bear {
+  border-left: 3px solid var(--color-success);
+}
+
+.radarTradeRef.neutral {
+  border-left: 3px solid var(--color-muted);
+}
+
+.radarTradeRefHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.radarTradeRefBody {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.radarTradeRefBody > div {
+  border-radius: var(--radius-control);
+  background: var(--color-surface-muted);
+  padding: 8px 12px;
+}
+
+.radarTradeRefBody span {
+  display: block;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.radarTradeRefBody strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--color-text);
+  font-size: 15px;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.radarTradeRefSource {
+  margin: 8px 0 0;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .radarTags {
@@ -7863,7 +9304,7 @@ textarea:focus-visible {
 }
 
 .radarPageCompact .radarTags {
-  gap: 5px;
+  gap: 4px;
   margin-top: 8px;
 }
 
@@ -7873,7 +9314,7 @@ textarea:focus-visible {
   color: var(--color-muted-strong);
   font-size: 12px;
   font-weight: 750;
-  padding: 5px 9px;
+  padding: 4px 8px;
 }
 
 .radarPageCompact .radarTags span {
@@ -7927,7 +9368,7 @@ textarea:focus-visible {
 }
 
 .radarPageCompact .radarReasonGrid > div {
-  padding: 9px 10px;
+  padding: 8px 12px;
 }
 
 .radarReasonGrid h3 {
@@ -7936,11 +9377,11 @@ textarea:focus-visible {
 }
 
 .radarPageCompact .radarReasonGrid h3 {
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
 
 .radarReasonGrid p {
-  margin: 7px 0 0;
+  margin: 8px 0 0;
   color: var(--color-text-soft);
   font-size: 13px;
   line-height: 1.55;
@@ -7972,10 +9413,265 @@ textarea:focus-visible {
   flex-direction: column;
 }
 
-.ordersPanel .panelHeader {
-  padding: 8px 10px;
+/* 订单独立成页后，交易页只剩下单面板：单列、限制宽度并在工作区居中，避免表单贴左留下大片空白。 */
+.tradeGridSolo {
+  grid-template-columns: minmax(0, 720px);
+  justify-content: center;
+}
+
+/* 交易工作台：概览条 + 左侧下单 + 右侧持仓/挂单。
+   整页滚动、面板高度随内容展开，避免下单面板出现内部滚动条把「提交」等底部字段截断。 */
+.tradePage.tradePageWorkbench {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.tradeWorkbenchOverview {
+  flex: 0 0 auto;
+  border: 1px solid #e2e9f1;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface, #fff);
+  padding: var(--space-2) var(--space-3);
+}
+
+.workbenchOverviewHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.workbenchOverviewTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text);
+  font-size: 15px;
+}
+
+.workbenchOverviewTitle .stateBadge {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.workbenchOverviewMetrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+
+.tradeGrid.tradeGridWorkbench {
+  grid-template-columns: minmax(340px, 440px) minmax(0, 1fr);
+  grid-template-rows: auto;
+  align-items: start;
+}
+
+/* 下单面板随内容展开，不再锁在视口高度里滚动；底部提交字段完整可见。 */
+.tradeGrid.tradeGridWorkbench > .tradeTicket {
+  grid-row: 1;
+  overflow: visible;
+  max-height: none;
+}
+
+.tradeWorkbenchSide {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.workbenchPanel {
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #e2e9f1;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface, #fff);
+}
+
+.workbenchPanel .panelHeader {
+  padding: 8px 12px;
   border-bottom: 1px solid #e2e9f1;
   flex: 0 0 auto;
+}
+
+/* 右侧列表限高，持仓/挂单多时只在表格内滚动，不拖长整页。 */
+.workbenchTableWrap {
+  min-height: 0;
+  flex: 1 1 auto;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.workbenchPositionTable {
+  min-width: 640px;
+}
+
+.workbenchPendingTable {
+  min-width: 640px;
+}
+
+@media (max-width: 1200px) {
+  .tradeGrid.tradeGridWorkbench {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .tradeGrid.tradeGridWorkbench > .tradeTicket {
+    grid-row: auto;
+  }
+
+  .tradeWorkbenchSide {
+    min-height: auto;
+  }
+
+  .workbenchTableWrap {
+    max-height: 280px;
+  }
+}
+
+/* 交易工作台紧凑模式：让下单面板从「合约」到「提交订单」在常见视口高度内一屏放下，
+   无需滚动。所有覆盖都限定在 .tradePageWorkbench 作用域，避免影响其它页面复用同名控件。 */
+.tradePage.tradePageWorkbench {
+  padding: 12px var(--space-3);
+  gap: var(--space-2);
+}
+
+.tradePageWorkbench .tradeWorkbenchOverview {
+  padding: 4px var(--space-3);
+}
+
+/* 8 个杠杆预设由两行压成一行，是纵向空间最大的单项节省（约 34px）。 */
+.tradePageWorkbench .leveragePresets {
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.tradePageWorkbench .leveragePresets button {
+  font-size: 11px;
+}
+
+.tradePageWorkbench .tradeTicket {
+  gap: 4px;
+  padding: 8px;
+}
+
+.tradePageWorkbench .tradeTicketSection {
+  gap: 4px;
+  padding-top: 4px;
+}
+
+.tradePageWorkbench .fieldBlock {
+  gap: 3px;
+}
+
+.tradePageWorkbench .contractPickerButton {
+  min-height: 42px;
+  padding: 4px 8px;
+}
+
+.tradePageWorkbench .leverageControl {
+  gap: 4px;
+}
+
+.tradePageWorkbench .leverageMeta {
+  min-height: 28px;
+}
+
+.tradePageWorkbench .advancedOrderType {
+  gap: 4px;
+}
+
+.tradePageWorkbench .inlineToggleButton {
+  min-height: 24px;
+}
+
+.tradePageWorkbench .quantityPreview {
+  min-height: 26px;
+  padding: 4px 8px;
+}
+
+/* Mantine v9 SegmentedControl 的选中块由 --sc-color 控制（indicator 铺满选中格）；
+   这里让工作台的分段控件选中态跟随项目语义色：默认正向绿、做空(sell)负向红。 */
+.tradePageWorkbench .segmentedButtons {
+  --sc-color: var(--color-success-soft);
+  --sc-label-color: var(--color-success-strong);
+  --sc-shadow: none;
+  /* 去掉 Mantine 默认 4px 内边距，让选中高亮块铺满到控件边缘（整格高亮、四边不留灰缝）。
+     indicator 由 JS 按 label 位置重新测量定位，padding 归零后 label 变宽会触发重算。 */
+  padding: 0;
+  /* 根治"点做空后控件错位"：Mantine root 原生 overflow:hidden 会创建可滚动容器，
+     而内部隐藏的 radio input 使 scrollHeight(37) > clientHeight(23)。点击选项时 radio 获焦，
+     浏览器为让它可见会把 root 滚动 3px，导致 label/indicator 整体上移、indicator 相对 root
+     的计算位置错位。overflow:clip 同样裁出圆角，但不建立滚动容器，focus 时无法被滚动。 */
+  overflow: clip;
+}
+
+/* 选中块不自带圆角：root 已有 overflow:clip + 外框圆角，铺满后由 root 裁出正确的外角。
+   若让 indicator 继承外框圆角（8px），选中右格(如做空)时它的左边缘会出现半圆缺口、像贴片浮起，
+   与选中左格(如限价)的平直边缘不一致。indicator 用方角铺满整格即可，两侧表现一致。 */
+.tradePageWorkbench .segmentedButtons .mantine-SegmentedControl-indicator {
+  border-radius: 0;
+}
+
+.tradePageWorkbench .segmentedButtons.sell {
+  --sc-color: var(--color-danger-soft);
+  --sc-label-color: var(--color-danger);
+}
+
+/* 点击选项后隐藏的 radio 会获得焦点，Mantine 通过
+   input:focus:focus-visible + label { --segmented-control-outline: 2px solid ... }
+   给 label 加一圈主色 outline；在紧凑分段控件上表现为选中块边缘的深色描边/脏边。
+   工作台内去掉这圈 outline，避免看起来像选中块变形，同时保留 indicator 铺满的选中态。 */
+.tradePageWorkbench .segmentedButtons .mantine-SegmentedControl-label {
+  outline: none !important;
+}
+
+.ordersPage .ordersPanel {
+  flex: 1 1 auto;
+}
+
+.ordersPanelPage .tradeOrderControls {
+  grid-template-columns: minmax(200px, 1fr) minmax(150px, 210px) auto minmax(104px, auto) minmax(104px, auto);
+}
+
+.ordersPage .orderTable {
+  flex: 1 1 auto;
+}
+
+.ordersPanel .panelHeader {
+  padding: 8px 12px;
+  border-bottom: 1px solid #e2e9f1;
+  flex: 0 0 auto;
+}
+
+.pendingOrdersPanel {
+  min-width: 0;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #e2e9f1;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface, #fff);
+}
+
+.pendingOrdersPanel .panelHeader {
+  padding: 8px 12px;
+  border-bottom: 1px solid #e2e9f1;
+}
+
+.pendingOrdersPanel .orderTable {
+  max-height: 260px;
+}
+
+.pendingOrderTable {
+  min-width: 720px;
 }
 
 .tradeOrderControls {
@@ -8021,10 +9717,134 @@ textarea:focus-visible {
 }
 
 .orderHistoryTable {
-  min-width: 940px;
+  min-width: 1050px;
   color: var(--color-text);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+}
+
+.orderPnlSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+
+.orderPnlSummary > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--color-muted-strong);
+  font-size: 12px;
+}
+
+.orderPnlSummary strong {
+  font-size: 14px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.orderPnlSummary > small {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.orderHistoryTable td small {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.orderHistoryTable td.orderPnlCell strong {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.orderHistoryTable td.orderPnlCell strong.orderPnlSettled {
+  text-decoration: underline dotted var(--color-muted);
+  text-underline-offset: 3px;
+}
+
+.orderHistoryTable td.orderPnlCell .pnl-positive,
+.orderPnlSummary strong.pnl-positive {
+  color: var(--color-success-strong);
+}
+
+.orderHistoryTable td.orderPnlCell .pnl-negative,
+.orderPnlSummary strong.pnl-negative {
+  color: var(--color-danger-strong);
+}
+
+.orderHistoryTable td.orderPnlCell .pnl-neutral,
+.orderPnlSummary strong.pnl-neutral {
+  color: var(--color-muted-strong);
+}
+
+/* 订单来源：自动化 / 手动，用于把两类订单在同一张表里明确区分开。 */
+.orderOriginFilter button {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.orderOriginCount {
+  min-width: 18px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+  color: var(--color-muted-strong);
+  font-size: 10px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+
+.orderOriginFilter button.selected .orderOriginCount {
+  background: var(--color-surface);
+  color: var(--color-primary);
+}
+
+.orderHistoryTable td.orderOriginCell {
+  white-space: nowrap;
+}
+
+.orderOriginTag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+  color: var(--color-muted-strong);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.orderOriginTag.automation {
+  border-color: var(--color-success-border);
+  background: var(--color-success-soft);
+  color: var(--color-success-strong);
+}
+
+.orderOriginTag.manual {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-soft);
+}
+
+.orderHistoryTable td.orderOriginCell small {
+  max-width: 148px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .orderHistoryTable th,
@@ -8117,11 +9937,11 @@ textarea:focus-visible {
 }
 
 .infoTile {
-  padding: 7px 8px;
+  padding: 8px 8px;
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   column-gap: 8px;
-  row-gap: 5px;
+  row-gap: 4px;
   align-items: center;
 }
 
@@ -8152,7 +9972,7 @@ textarea:focus-visible {
 }
 
 .positionsPanel .panelHeader {
-  padding: 8px 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid #e2e9f1;
   flex: 0 0 auto;
 }
@@ -8234,7 +10054,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: 1.5fr repeat(6, 1fr);
   gap: 12px;
-  padding: 7px 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid #edf1f6;
   color: #273545;
   font-variant-numeric: tabular-nums;
@@ -8252,7 +10072,7 @@ textarea:focus-visible {
 }
 
 .emptyRow {
-  padding: 16px 14px;
+  padding: 16px 16px;
   color: #68788a;
 }
 
@@ -8267,12 +10087,12 @@ textarea:focus-visible {
 .watchlistEmptyState {
   display: grid;
   justify-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .watchlistEmptyState .secondaryButton {
   min-height: 30px;
-  padding: 0 10px;
+  padding: 0 12px;
   color: var(--color-success-strong);
   box-shadow: inset 0 0 0 1px rgba(13, 159, 101, 0.22);
 }
@@ -8351,7 +10171,7 @@ textarea:focus-visible {
   }
 
   .marketChartMain .contractHero {
-    padding: 7px 10px;
+    padding: 8px 12px;
   }
 
   .marketAiOutlookPanel {
@@ -8360,7 +10180,7 @@ textarea:focus-visible {
   }
 
   .marketChartMain .candleInspector {
-    padding: 4px 10px;
+    padding: 4px 12px;
   }
 
   .marketChartMain .candleInspectorMetric {
@@ -8372,7 +10192,7 @@ textarea:focus-visible {
 @media (min-width: 1201px) and (max-height: 640px) {
   .marketChartMain .chartHeader {
     min-height: 30px;
-    padding: 4px 10px;
+    padding: 4px 12px;
   }
 
   .marketChartMain .workspaceHeader {
@@ -8440,7 +10260,7 @@ textarea:focus-visible {
 
   .marketRail.collapsed {
     align-items: stretch;
-    padding: 10px;
+    padding: 12px;
   }
 
   .marketRail.collapsed .marketRailCollapsedHeader {
@@ -8568,13 +10388,22 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .radarWatchHead {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .radarWatchHint {
+    white-space: normal;
+  }
+
   .radarMetaLine {
     max-width: 100%;
     justify-content: flex-start;
   }
 
   .radarBriefCard {
-    padding: 9px 10px;
+    padding: 8px 12px;
   }
 
   .signalLogMinimalFilter {
@@ -8595,9 +10424,6 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .cleanInlineMetrics {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 760px) {
@@ -8605,6 +10431,15 @@ textarea:focus-visible {
   .workspaceHeader {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .automationOnboardingBody {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .automationOnboardingSteps {
+    grid-template-columns: 1fr;
   }
 
   .appHeader {
@@ -8751,7 +10586,7 @@ textarea:focus-visible {
   }
 
   .marketAiOutlookPanel.fullPage {
-    padding: 14px;
+    padding: 16px;
   }
 
   .marketAiFactList {
@@ -8797,7 +10632,7 @@ textarea:focus-visible {
     flex-wrap: wrap;
   }
 
-  .marketStats, .tradingStatsGrid, .candleInspector, .positionSummary, .radarScoreGrid, .radarReasonGrid, .llmSummary, .fieldGrid, .strategyActions, .tradeFacts, .tradeLockPanel, .signalDetailMetrics, .inlineDetailMetrics, .maEvidenceGrid, .aiAnalysisGrid, .aiListGrid, .llmActions, .cleanInlineMetrics {
+  .marketStats, .tradingStatsGrid, .candleInspector, .positionSummary, .radarScoreGrid, .radarReasonGrid, .llmSummary, .fieldGrid, .strategyActions, .tradeLockPanel, .signalDetailMetrics, .inlineDetailMetrics, .maEvidenceGrid, .aiAnalysisGrid, .aiListGrid, .llmActions, .cleanInlineMetrics {
     grid-template-columns: 1fr;
   }
 
@@ -8844,7 +10679,7 @@ textarea:focus-visible {
 
   .radarTableHeader,
   .radarRow {
-    grid-template-columns: minmax(0, 1fr) 52px 92px;
+    grid-template-columns: minmax(0, 1fr) 52px 40px 92px;
   }
 
   .radarDetailHeader {
@@ -8881,7 +10716,7 @@ textarea:focus-visible {
 
   .signalLogTable th,
   .signalLogTable td {
-    padding: 9px 10px;
+    padding: 8px 12px;
   }
 
   .contractPickerButton {
@@ -8898,5 +10733,1355 @@ textarea:focus-visible {
 
   .contractOption .stateBadge {
     display: none;
+  }
+
+  .automationInstrumentAddRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .automationInstrumentAddRow .secondaryButton {
+    width: 100%;
+  }
+
+  .automationFormHintRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .automationFormHintRow .rowAction {
+    align-self: flex-start;
+  }
+}
+
+/* ---------- 账本式版式迁移 · 第 1 页：行情图表（规范 3.3 / 8.3） ----------
+   对照 docs/frontend-visual-identity-v3.html：单一白色纸面、贯穿全页的
+   左对齐轴与数字右对齐轴、横线分节、两栏之间只用一条竖线、不嵌套卡片。
+   本区块只改「内容与容器如何对齐」，全部取值来自既有令牌；选择器限定
+   .marketChartMain，迁移期其他页面保持原版式。 */
+
+.marketChartMain {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.marketChartMain > .marketChartTopbar,
+.marketChartMain > .marketNoticeSlot,
+.marketChartMain > .contractHero,
+.marketChartMain > .marketChartReading {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+/* 四层嵌套卡片退回纸面：边框、圆角、阴影、底色全部撤掉 */
+.marketChartMain .marketChartToolbar,
+.marketChartMain > .contractHero,
+.marketChartMain .chartPanel,
+.marketChartMain .marketOrderBook {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.marketChartMain .marketChartToolbar {
+  padding: 0;
+}
+
+/* 纵向分节线放在去卡片规则之后，避免被 border: 0 覆盖 */
+.marketChartMain > .marketChartTopbar,
+.marketChartMain > .marketNoticeSlot.visible,
+.marketChartMain > .contractHero {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.marketChartMain > .marketChartTopbar {
+  padding-top: var(--space-5);
+  padding-bottom: var(--space-4);
+}
+
+.marketChartMain > .contractHero,
+.marketChartMain > .marketChartReading {
+  padding-top: var(--space-5);
+  padding-bottom: var(--space-5);
+}
+
+.marketChartMain .chartHeader {
+  border-bottom-color: var(--color-border);
+}
+
+/* 数字右对齐轴：主价格、24h 指标与订单簿共用同一读数方向 */
+.marketChartMain .heroPriceBlock,
+.marketChartMain .miniMetric strong {
+  text-align: right;
+}
+
+/* 两栏之间只用一条竖线，不靠卡片间距分隔 */
+@container (min-width: 960px) {
+  .marketChartMain .marketChartReading {
+    gap: 0;
+  }
+
+  .marketChartMain .marketOrderBook {
+    border-left: 1px solid var(--color-border);
+    padding-left: var(--space-3);
+  }
+}
+
+/* 纵向档改用横线分节，同样不靠卡片空隙 */
+@container (max-width: 959px) {
+  .marketChartMain .marketChartReading {
+    gap: 0;
+  }
+
+  .marketChartMain .chartPanel {
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-4);
+  }
+
+  .marketChartMain .marketOrderBook {
+    padding-top: var(--space-4);
+  }
+}
+
+/* 3.4 三档对齐轴降级；单列时取消右对齐 */
+@media (max-width: 1200px) {
+  .marketChartMain > .marketChartTopbar,
+  .marketChartMain > .marketNoticeSlot,
+  .marketChartMain > .contractHero,
+  .marketChartMain > .marketChartReading {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+}
+
+@media (max-width: 767px) {
+  .marketChartMain > .marketChartTopbar,
+  .marketChartMain > .marketNoticeSlot,
+  .marketChartMain > .contractHero,
+  .marketChartMain > .marketChartReading {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .marketChartMain .heroPriceBlock {
+    text-align: left;
+  }
+}
+
+/* 矮屏保留既有紧凑高度优化，不因对齐轴把内容顶出视口 */
+@media (min-width: 1201px) and (max-height: 719px) {
+  .marketChartMain > .marketChartTopbar,
+  .marketChartMain > .contractHero,
+  .marketChartMain > .marketChartReading {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 第 2 页：AI 看行情（规范 3.3 / 8.3） ----------
+   与第 1 页同构：单一白色纸面、48px 对齐轴、横线分节、数字右对齐。
+   报告内容是语义分组（结论涨跌色 / 证据 / 随访 / 补充），按 4.2、5.2
+   保留状态底色与边框；账本式只收敛页面骨架，不抹语义色。
+   选择器限定 .marketAiMain，迁移期其他页面保持原版式。 */
+
+.marketAiMain {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.marketAiMain > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+/* 骨架层容器退回纸面 */
+.marketAiMain > .contractHero,
+.marketAiMain > .marketAiOutlookPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* fullPage 的简写 padding 优先级更高，用同处规则把对齐轴钉住 */
+.marketAiMain > .marketAiOutlookPanel.fullPage {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+/* 横向分节线（含条件渲染的警告条） */
+.marketAiMain > .marketAiWorkspaceHeader,
+.marketAiMain > .notice,
+.marketAiMain > .contractHero {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.marketAiMain > .marketAiWorkspaceHeader,
+.marketAiMain > .contractHero,
+.marketAiMain > .marketAiOutlookPanel.fullPage {
+  padding-top: var(--space-5);
+  padding-bottom: var(--space-5);
+}
+
+/* 数字右对齐轴，与第 1 页同一读数方向 */
+.marketAiMain .heroPriceBlock,
+.marketAiMain .miniMetric strong {
+  text-align: right;
+}
+
+/* 「图表快照」值含根数与时间，5 等分列会被 ellipsis 截断；一行也塞不下
+   五个指标的内容宽度（约 470px 需求 vs 约 468px 容器）。改为 3 列两行、
+   末列跨 2 格，每格都留足空间，全程只用 fr 比例、不引入硬编码列宽
+   （规范 1.1 / 4.3）。 */
+.marketAiMain .heroTiles {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.marketAiMain .heroTiles > .miniMetric:last-child {
+  grid-column: span 2;
+}
+
+/* 3.4 三档对齐轴降级；单列时取消右对齐 */
+@media (max-width: 1200px) {
+  .marketAiMain > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .marketAiMain > .marketAiOutlookPanel.fullPage {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+}
+
+@media (max-width: 767px) {
+  .marketAiMain > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .marketAiMain > .marketAiOutlookPanel.fullPage {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .marketAiMain .heroTiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .marketAiMain .heroPriceBlock {
+    text-align: left;
+  }
+}
+
+/* 矮屏保留既有紧凑高度优化 */
+@media (min-width: 1201px) and (max-height: 719px) {
+  .marketAiMain > .marketAiWorkspaceHeader,
+  .marketAiMain > .contractHero,
+  .marketAiMain > .marketAiOutlookPanel.fullPage {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 第 3 页：交易（规范 3.3 / 8.3） ----------
+   与第 1、2 页同构：单一白色纸面、48/24/16px 对齐轴、横向分节、数字右对齐。
+   下单表单 / 工作台是功能性两栏，保留 minmax(340px, 440px) 列宽，
+   两栏之间改用一条竖线，≤1200px 转纵向后改横线。按 3.2 紧凑密度
+   垂直只用 space-3，不放大到 space-5。选择器限定工作台根容器。 */
+
+.tradePage.tradePageWorkbench {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.tradePage.tradePageWorkbench > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+/* 语义警告条自带状态底色与边框，按轴缩进而不叠加 48px 内边距 */
+.tradePage.tradePageWorkbench > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+/* 概览条、下单表单、工作台面板退回纸面 */
+.tradePage.tradePageWorkbench > .tradeWorkbenchOverview,
+.tradePage.tradePageWorkbench .tradeGridWorkbench > .tradeTicket,
+.tradePage.tradePageWorkbench .workbenchPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* 面板标题回到同一条左对齐轴 */
+.tradePage.tradePageWorkbench .workbenchPanel .panelHeader {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* 横向分节（放在去卡片规则之后，避免被 border: 0 覆盖） */
+.tradePage.tradePageWorkbench > .workspaceHeader,
+.tradePage.tradePageWorkbench > .tradeWorkbenchOverview {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+.tradePage.tradePageWorkbench > .tradeGrid {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
+}
+
+/* 两栏之间只用一条竖线，不靠卡片空隙 */
+.tradePage.tradePageWorkbench .tradeGridWorkbench {
+  gap: 0;
+}
+
+.tradePage.tradePageWorkbench .tradeWorkbenchSide {
+  border-left: 1px solid var(--color-border);
+  padding-left: var(--space-3);
+}
+
+.tradePage.tradePageWorkbench .workbenchPanel + .workbenchPanel {
+  border-top: 1px solid var(--color-border);
+}
+
+/* 数字右对齐轴 */
+.tradePage.tradePageWorkbench .miniMetric strong,
+.tradePage.tradePageWorkbench .metric strong {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .tradePage.tradePageWorkbench > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .tradePage.tradePageWorkbench > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+
+  /* 既有规则已让工作台转纵向，竖线随之改横线 */
+  .tradePage.tradePageWorkbench .tradeGridWorkbench > .tradeTicket {
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-3);
+  }
+
+  .tradePage.tradePageWorkbench .tradeWorkbenchSide {
+    border-left: 0;
+    padding-left: 0;
+    padding-top: var(--space-3);
+  }
+}
+
+@media (max-width: 767px) {
+  .tradePage.tradePageWorkbench > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .tradePage.tradePageWorkbench > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .tradePage.tradePageWorkbench .miniMetric strong,
+  .tradePage.tradePageWorkbench .metric strong {
+    text-align: left;
+  }
+}
+
+/* 矮屏保留交易工作台既有的紧凑高度优化 */
+@media (min-width: 1201px) and (max-height: 719px) {
+  .tradePage.tradePageWorkbench > .workspaceHeader,
+  .tradePage.tradePageWorkbench > .tradeWorkbenchOverview,
+  .tradePage.tradePageWorkbench > .tradeGrid {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 第 4 页：自动化总览（规范 3.3 / 8.3） ----------
+   与前三页同构。结论面板是语义强调卡片（可下单 / 只记录信号 / 暂不能），
+   按 4.2、5.2 保留它的状态左边框与底色；账本式只收敛工作区头、
+   普通面板与两栏栅格。选择器限定总览根容器。 */
+
+.automationPage.cleanAutomationPage {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.automationPage.cleanAutomationPage > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+.automationPage.cleanAutomationPage > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+/* 普通面板退回纸面；结论面板不在此列 */
+.automationPage.cleanAutomationPage .cleanPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.automationPage.cleanAutomationPage .cleanPanel > .panelHeader {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.automationPage.cleanAutomationPage > .workspaceHeader {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.automationPage.cleanAutomationPage > .cleanAutomationView {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.automationPage.cleanAutomationPage .cleanAutomationView {
+  gap: 0;
+}
+
+/* 语义结论卡片保留自身边框与底色，只与下方内容拉开一行 */
+.automationPage.cleanAutomationPage .cleanAutomationView > .cleanDecisionPanel {
+  margin-bottom: var(--space-4);
+}
+
+.automationPage.cleanAutomationPage .cleanAutomationView > .cleanPanel {
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: var(--space-4);
+}
+
+.automationPage.cleanAutomationPage .cleanAutomationEditor > .cleanPanel + .cleanPanel,
+.automationPage.cleanAutomationPage .cleanAutomationColumn > .cleanPanel + .cleanPanel {
+  border-top: 1px solid var(--color-border);
+}
+
+/* 栅格两栏：保留 300px 右栏列宽，只用一条竖线分隔 */
+.automationPage.cleanAutomationPage .cleanAutomationGrid {
+  gap: 0;
+}
+
+.automationPage.cleanAutomationPage .cleanAutomationGrid > .cleanPanel {
+  border-left: 1px solid var(--color-border);
+  padding-left: var(--space-4);
+}
+
+.automationPage.cleanAutomationPage .miniMetric strong,
+.automationPage.cleanAutomationPage .metric strong {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .automationPage.cleanAutomationPage > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .automationPage.cleanAutomationPage > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+
+  /* 既有规则让栅格转单列，竖线随之改横线 */
+  .automationPage.cleanAutomationPage .cleanAutomationGrid > .cleanPanel {
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--color-border);
+    padding-top: var(--space-4);
+  }
+}
+
+@media (max-width: 767px) {
+  .automationPage.cleanAutomationPage > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .automationPage.cleanAutomationPage > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .automationPage.cleanAutomationPage .miniMetric strong,
+  .automationPage.cleanAutomationPage .metric strong {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1201px) and (max-height: 719px) {
+  .automationPage.cleanAutomationPage > .workspaceHeader,
+  .automationPage.cleanAutomationPage > .cleanAutomationView {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 第 5 页：持仓（规范 3.3 / 8.3） ----------
+   与前三页同构。持仓表 8 列需要稳定列宽与容器内横向滚动（3.4），
+   保留原生数字右对齐；账本式落在纸面、对齐轴、面板分节与数字轴。
+   面板内部原有的 16px 左右内边距归零，让对齐轴贯穿标题与汇总区。 */
+
+.positionsPage {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.positionsPage > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+.positionsPage > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+/* 汇总 / 列表面板退回纸面 */
+.positionsPage > .signalLogMinimalPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.positionsPage > .signalLogMinimalPanel > .signalLogMinimalPanelHeader,
+.positionsPage .positionPnlSummary .positionSummary,
+.positionsPage .positionPnlSummaryFreshness,
+.positionsPage .signalLogTableWrap {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.positionsPage > .signalLogMinimalPanel > .signalLogMinimalPanelHeader {
+  background: transparent;
+}
+
+/* 横向分节。Mantine Paper 的 p={0} 会钉住面板自身 padding，
+   因此分节留白由页头、筛选控件与面板内部元素承担，面板只保留一条线。 */
+.positionsPage > .workspaceHeader,
+.positionsPage > .positionMinimalControls {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+/* 汇总面板按内容自然高度；原 flex: 1 1 auto 会把它拉成一段无信息空白 */
+.positionsPage > .signalLogMinimalPanel.positionPnlSummary {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.positionsPage .positionPnlSummary .positionSummary {
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-2);
+}
+
+.positionsPage .positionPnlSummaryFreshness {
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-3);
+}
+
+.positionsPage .miniMetric strong,
+.positionsPage .metric strong {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .positionsPage > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .positionsPage > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+}
+
+@media (max-width: 767px) {
+  .positionsPage > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .positionsPage > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .positionsPage .miniMetric strong,
+  .positionsPage .metric strong {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1201px) and (max-height: 719px) {
+  .positionsPage > .workspaceHeader,
+  .positionsPage > .positionMinimalControls {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 长尾 1：事件时间线（规范 3.3 / 8.4） ----------
+   与前五页同构。日历是纵向阅读流，保留既有 700px 阅读栏（行宽约束），
+   但把事件行从灰底圆角卡片改回「时间列 + 内容 + 1px 分节线」的账本行；
+   政策决议行与事件状态色属于语义强调，按 4.2 / 5.2 保留。 */
+
+.usTimelinePage {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.usTimelinePage > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+.usTimelinePage > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+/* 分节留白统一由 padding 承担，既有 margin-bottom 归零避免双重留白 */
+.usTimelinePage > .usTimelineHeader,
+.usTimelinePage > .usTimelineDates,
+.usTimelinePage > .usTimelineFilters {
+  margin-bottom: 0;
+}
+
+.usTimelinePage > .usTimelineHeader {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-3);
+}
+
+.usTimelinePage > .usTimelineDates,
+.usTimelinePage > .usTimelineFilters {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.usTimelinePage > .usTimelineList,
+.usTimelinePage > .usTimelineSourceWarning {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+/* 事件行退回纸面：只留一条横线，不再每行一张卡片 */
+.usTimelinePage .usEventCard > div {
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  background: transparent;
+  padding: var(--space-3) 0;
+}
+
+.usTimelinePage .usEventCard + .usEventCard {
+  margin-top: 0;
+}
+
+/* 政策决议是语义强调行，保留浅底与左侧标记 */
+.usTimelinePage .usEventCard.primary > div {
+  border-left: 3px solid var(--color-border-strong);
+  padding-left: var(--space-3);
+  background: var(--color-surface-muted);
+}
+
+.usTimelinePage .usEventValues b,
+.usTimelinePage .usEventCard > time {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .usTimelinePage > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .usTimelinePage > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+}
+
+@media (max-width: 767px) {
+  .usTimelinePage > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .usTimelinePage > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .usTimelinePage .usEventCard > div {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .usTimelinePage .usEventValues b,
+  .usTimelinePage .usEventCard > time {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1201px) and (max-height: 719px) {
+  .usTimelinePage > .usTimelineHeader,
+  .usTimelinePage > .usTimelineDates,
+  .usTimelinePage > .usTimelineFilters {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 长尾 2：OKX 公告（规范 3.3 / 8.4） ----------
+   分类 / 列表是功能性两栏，保留 minmax(220px, 280px) 分类列宽与列表行最小宽度
+   （3.4 容器内横向滚动）；两栏之间只用一条竖线，≤1200px 转纵向后改横线。 */
+
+.announcementsPage {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.announcementsPage > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+.announcementsPage > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+.announcementsPage > .workspaceHeader,
+.announcementsPage > .radarFeedback {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.announcementsPage > .announcementLayout {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.announcementsPage .announcementLayout {
+  gap: 0;
+}
+
+.announcementsPage .announcementTypePanel,
+.announcementsPage .announcementListPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.announcementsPage .announcementTypePanel {
+  border-right: 1px solid var(--color-border);
+  padding-right: var(--space-3);
+}
+
+.announcementsPage .announcementListPanel {
+  padding-left: var(--space-3);
+}
+
+/* 面板标题与行内边距归零，让左对齐轴贯穿 */
+.announcementsPage .announcementTypePanel .panelHeader,
+.announcementsPage .announcementListHeader {
+  padding-left: 0;
+  padding-right: 0;
+  background: transparent;
+  border-bottom-color: var(--color-border);
+}
+
+.announcementsPage .announcementTypeList,
+.announcementsPage .announcementRow {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.announcementsPage .announcementRow {
+  border-bottom-color: var(--color-border);
+}
+
+.announcementsPage .announcementTimes {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .announcementsPage > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .announcementsPage > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+
+  /* 既有规则已让两栏转纵向，竖线随之改横线 */
+  .announcementsPage .announcementTypePanel {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    padding-right: 0;
+    padding-bottom: var(--space-3);
+  }
+
+  .announcementsPage .announcementListPanel {
+    padding-left: 0;
+    padding-top: var(--space-3);
+  }
+}
+
+@media (max-width: 767px) {
+  .announcementsPage > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .announcementsPage > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .announcementsPage .announcementTimes {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1201px) and (max-height: 719px) {
+  .announcementsPage > .workspaceHeader,
+  .announcementsPage > .radarFeedback,
+  .announcementsPage > .announcementLayout {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 长尾 3：AI 配置 / 设置（规范 3.3 / 8.4） ----------
+   配置 / 状态是功能性两栏，保留 llmGrid 既有列宽比例，并排时一条竖线，
+   ≤1200px 转纵向后改横线。info 语义提示条与状态标签按 4.2 保留。 */
+
+.llmPage {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.llmPage > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+.llmPage > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+.llmPage > .workspaceHeader,
+.llmPage > .llmSummary {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.llmPage > .llmGrid {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.llmPage .llmGrid {
+  gap: 0;
+}
+
+.llmPage .llmConfigPanel,
+.llmPage .llmStatusPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.llmPage .llmStatusPanel {
+  border-left: 1px solid var(--color-border);
+  padding-left: var(--space-3);
+}
+
+.llmPage .positionsPanel .panelHeader {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.llmPage .llmForm,
+.llmPage .llmStatusBody {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.llmPage .miniMetric strong,
+.llmPage .metric strong {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .llmPage > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .llmPage > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+
+  /* 既有规则已让两栏转纵向，竖线随之改横线 */
+  .llmPage .llmStatusPanel {
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+    padding-left: 0;
+    padding-top: var(--space-3);
+  }
+}
+
+@media (max-width: 767px) {
+  .llmPage > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .llmPage > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .llmPage .miniMetric strong,
+  .llmPage .metric strong {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1201px) and (max-height: 719px) {
+  .llmPage > .workspaceHeader,
+  .llmPage > .llmSummary,
+  .llmPage > .llmGrid {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 长尾 4：AI 用量（规范 3.3 / 8.4） ----------
+   与持仓页同构：汇总筛选、明表面板按横线分节，面板内部重复内边距归零。
+   8 列表格列宽与容器内横向滚动按 3.4 保留，不改数字列布局。 */
+
+.usagePage {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.usagePage > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+.usagePage > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+.usagePage > .workspaceHeader,
+.usagePage > .usageMinimalControls {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.usagePage > .usageListPanel {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.usagePage .usageListPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.usagePage .usageListPanel > .signalLogMinimalPanelHeader {
+  padding-left: 0;
+  padding-right: 0;
+  background: transparent;
+}
+
+.usagePage .signalLogTableWrap,
+.usagePage .paginationBar {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.usagePage .miniMetric strong,
+.usagePage .metric strong {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .usagePage > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .usagePage > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+}
+
+@media (max-width: 767px) {
+  .usagePage > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .usagePage > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .usagePage .miniMetric strong,
+  .usagePage .metric strong {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1201px) and (max-height: 719px) {
+  .usagePage > .workspaceHeader,
+  .usagePage > .usageMinimalControls,
+  .usagePage > .usageListPanel {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 长尾 5：信号详情（规范 3.3 / 8.4） ----------
+   汇总六列指标与详情面板按横线分节，面板退回纸面；
+   signalDetailHero 是涨跌语义强调卡片，按 4.2 / 5.2 完整保留。 */
+
+.signalsPage.signalDetailPage {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.signalsPage.signalDetailPage > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+.signalsPage.signalDetailPage > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+.signalsPage.signalDetailPage > .workspaceHeader,
+.signalsPage.signalDetailPage > .signalDetailSummary {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.signalsPage.signalDetailPage > .signalDetailFullPanel,
+.signalsPage.signalDetailPage > .signalDetailEmptyPanel {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.signalsPage.signalDetailPage .signalDetailFullPanel,
+.signalsPage.signalDetailPage .signalDetailEmptyPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.signalsPage.signalDetailPage .positionsPanel .panelHeader {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.signalsPage.signalDetailPage .signalDetailStandalone,
+.signalsPage.signalDetailPage .signalDetailMetrics,
+.signalsPage.signalDetailPage .inlineDetailMetrics {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.signalsPage.signalDetailPage .miniMetric strong,
+.signalsPage.signalDetailPage .metric strong {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .signalsPage.signalDetailPage > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .signalsPage.signalDetailPage > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+
+  /* 六列汇总在窄档重排，避免 ellipsis 吞掉策略名、合约与时间 */
+  .signalsPage.signalDetailPage > .signalDetailSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .signalsPage.signalDetailPage > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .signalsPage.signalDetailPage > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .signalsPage.signalDetailPage > .signalDetailSummary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .signalsPage.signalDetailPage .miniMetric strong,
+  .signalsPage.signalDetailPage .metric strong {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1201px) and (max-height: 719px) {
+  .signalsPage.signalDetailPage > .workspaceHeader,
+  .signalsPage.signalDetailPage > .signalDetailSummary,
+  .signalsPage.signalDetailPage > .signalDetailFullPanel,
+  .signalsPage.signalDetailPage > .signalDetailEmptyPanel {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ---------- 账本式版式迁移 · 第 5 步：默认落地页 · 合约雷达（规范 3.3 / 8.5） ----------
+   首页入口补做：候选列表与详情两块圆角卡片退回纸面，两栏之间只用一条竖线；
+   扫描控件 7 列栅格、候选表 4 列列宽与涨跌 / 风险语义色按 1.1 / 4.2 / 5.2 全部保留。 */
+
+.radarPage.radarPageCompact {
+  gap: 0;
+  padding: 0;
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.radarPage.radarPageCompact > * {
+  padding-left: var(--space-7);
+  padding-right: var(--space-7);
+}
+
+.radarPage.radarPageCompact > .notice {
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  margin-left: var(--space-7);
+  margin-right: var(--space-7);
+}
+
+.radarPage.radarPageCompact > .radarCompactHeader,
+.radarPage.radarPageCompact > .radarControls,
+.radarPage.radarPageCompact > .radarAnalysisPanel {
+  border-bottom: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.radarPage.radarPageCompact > .radarLayout {
+  padding-top: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+/* 扫描控件与分析面板只去卡片外形；ready / setup 的语义底色与左边框完整保留 */
+.radarPage.radarPageCompact > .radarControls {
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.radarPage.radarPageCompact > .radarAnalysisPanel {
+  border-radius: 0;
+}
+
+/* 候选 / 详情是功能性两栏，比例不改，只把中间的卡片缝换成一条竖线 */
+.radarPage.radarPageCompact > .radarLayout {
+  gap: 0;
+}
+
+.radarPage.radarPageCompact .radarListPanel,
+.radarPage.radarPageCompact .radarDetailPanel {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.radarPage.radarPageCompact .radarListPanel {
+  border-right: 1px solid var(--color-border);
+  padding-right: var(--space-3);
+}
+
+.radarPage.radarPageCompact .radarDetailPanel {
+  padding-left: var(--space-3);
+}
+
+/* 面板标题、表头与候选行左右归零，让 48px 左对齐轴贯穿 */
+.radarPage.radarPageCompact .radarListPanel .panelHeader,
+.radarPage.radarPageCompact .radarResultFilters,
+.radarPage.radarPageCompact .radarTableHeader,
+.radarPage.radarPageCompact .radarRow {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.radarPage.radarPageCompact .radarTableHeader {
+  background: transparent;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* 每行都留一条透明左边框，选中态只换颜色，不遮挡首列文字也不推挤栅格 */
+.radarPage.radarPageCompact .radarTableHeader,
+.radarPage.radarPageCompact .radarRow {
+  border-left: 3px solid transparent;
+}
+
+.radarPage.radarPageCompact .radarRow {
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: none;
+}
+
+.radarPage.radarPageCompact .radarRow.selected {
+  border-left-color: var(--color-primary);
+  box-shadow: none;
+}
+
+.radarPage.radarPageCompact .radarRow > span:last-child,
+.radarPage.radarPageCompact .radarTableHeader > span:last-child,
+.radarPage.radarPageCompact .radarBigScore strong {
+  text-align: right;
+}
+
+@media (max-width: 1200px) {
+  .radarPage.radarPageCompact > * {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+
+  .radarPage.radarPageCompact > .notice {
+    margin-left: var(--space-5);
+    margin-right: var(--space-5);
+  }
+
+  /* 既有规则已让两栏转纵向，竖线随之改横线 */
+  .radarPage.radarPageCompact .radarListPanel {
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    padding-right: 0;
+    padding-bottom: var(--space-3);
+  }
+
+  .radarPage.radarPageCompact .radarDetailPanel {
+    padding-left: 0;
+    padding-top: var(--space-3);
+  }
+}
+
+@media (max-width: 767px) {
+  .radarPage.radarPageCompact > * {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  .radarPage.radarPageCompact > .notice {
+    margin-left: var(--space-4);
+    margin-right: var(--space-4);
+  }
+
+  .radarPage.radarPageCompact .radarBigScore strong {
+    text-align: left;
+  }
+}
+
+@media (min-width: 1201px) and (max-height: 719px) {
+  .radarPage.radarPageCompact > .radarCompactHeader,
+  .radarPage.radarPageCompact > .radarControls,
+  .radarPage.radarPageCompact > .radarAnalysisPanel,
+  .radarPage.radarPageCompact > .radarLayout {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
   }
 }

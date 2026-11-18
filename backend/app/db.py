@@ -60,6 +60,7 @@ class DatabaseBackend(Protocol):
     ) -> None: ...
     def latest_account_snapshot(self, environment: str) -> dict[str, Any] | None: ...
     def latest_position_snapshot_payload(self, environment: str) -> dict[str, Any] | None: ...
+    def position_snapshot_rows_between(self, environment: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]: ...
     def insert_sim_order_event(self, event: dict[str, Any]) -> None: ...
     def list_sim_order_events(
         self,
@@ -70,10 +71,27 @@ class DatabaseBackend(Protocol):
         keyword: str = "",
         action: str = "",
         state: str = "",
+        origin: str = "",
     ) -> list[dict[str, Any]]: ...
     def count_sim_order_events(
-        self, environment: str, inst_id: str = "", keyword: str = "", action: str = "", state: str = ""
+        self,
+        environment: str,
+        inst_id: str = "",
+        keyword: str = "",
+        action: str = "",
+        state: str = "",
+        origin: str = "",
     ) -> int: ...
+    def sim_order_event_origin_counts(
+        self,
+        environment: str,
+        inst_id: str = "",
+        keyword: str = "",
+        action: str = "",
+        state: str = "",
+    ) -> dict[str, int]: ...
+    def mark_sim_order_event_origin(self, cl_ord_ids: list[str], origin: str) -> int: ...
+    def sim_order_event_origin_for(self, environment: str, cl_ord_id: str) -> str: ...
     def create_automation_strategy(self, strategy: dict[str, Any]) -> dict[str, Any]: ...
     def update_automation_strategy(self, strategy_id: int, strategy: dict[str, Any]) -> dict[str, Any] | None: ...
     def list_automation_strategies(self, include_archived: bool = False) -> list[dict[str, Any]]: ...
@@ -82,11 +100,16 @@ class DatabaseBackend(Protocol):
     def insert_automation_signal(self, signal: dict[str, Any]) -> dict[str, Any]: ...
     def get_automation_signal(self, signal_id: int) -> dict[str, Any] | None: ...
     def list_automation_signals(self, strategy_id: int = 0, limit: int = 100) -> list[dict[str, Any]]: ...
+    def list_automation_signals_since(self, strategy_id: int, since_ts: int) -> list[dict[str, Any]]: ...
     def latest_actionable_automation_signal(self, strategy_id: int) -> dict[str, Any] | None: ...
     def insert_automation_risk_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]: ...
     def get_automation_risk_snapshot(self, signal_id: int) -> dict[str, Any] | None: ...
     def insert_automation_execution_step(self, step: dict[str, Any]) -> dict[str, Any]: ...
     def list_automation_execution_steps(self, signal_id: int) -> list[dict[str, Any]]: ...
+    def upsert_algo_order(self, order: dict[str, Any]) -> dict[str, Any]: ...
+    def get_algo_order_by_cl_id(self, algo_cl_ord_id: str) -> dict[str, Any] | None: ...
+    def list_algo_orders(self, strategy_id: int = 0, states: list[str] | None = None) -> list[dict[str, Any]]: ...
+    def delete_algo_order(self, algo_cl_ord_id: str) -> None: ...
     def insert_automation_alert(self, alert: dict[str, Any]) -> dict[str, Any]: ...
     def list_automation_alerts(
         self,
@@ -174,6 +197,9 @@ class Database:
     def latest_position_snapshot_payload(self, environment: str) -> dict[str, Any] | None:
         return self._backend.latest_position_snapshot_payload(environment)
 
+    def position_snapshot_rows_between(self, environment: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
+        return self._backend.position_snapshot_rows_between(environment, from_ts, to_ts)
+
     def insert_sim_order_event(self, event: dict[str, Any]) -> None:
         self._backend.insert_sim_order_event(event)
 
@@ -186,6 +212,7 @@ class Database:
         keyword: str = "",
         action: str = "",
         state: str = "",
+        origin: str = "",
     ) -> list[dict[str, Any]]:
         return self._backend.list_sim_order_events(
             environment=environment,
@@ -195,14 +222,48 @@ class Database:
             keyword=keyword,
             action=action,
             state=state,
+            origin=origin,
         )
 
     def count_sim_order_events(
-        self, environment: str, inst_id: str = "", keyword: str = "", action: str = "", state: str = ""
+        self,
+        environment: str,
+        inst_id: str = "",
+        keyword: str = "",
+        action: str = "",
+        state: str = "",
+        origin: str = "",
     ) -> int:
         return self._backend.count_sim_order_events(
-            environment=environment, inst_id=inst_id, keyword=keyword, action=action, state=state
+            environment=environment,
+            inst_id=inst_id,
+            keyword=keyword,
+            action=action,
+            state=state,
+            origin=origin,
         )
+
+    def sim_order_event_origin_counts(
+        self,
+        environment: str,
+        inst_id: str = "",
+        keyword: str = "",
+        action: str = "",
+        state: str = "",
+    ) -> dict[str, int]:
+        return self._backend.sim_order_event_origin_counts(
+            environment=environment,
+            inst_id=inst_id,
+            keyword=keyword,
+            action=action,
+            state=state,
+        )
+
+    def mark_sim_order_event_origin(self, cl_ord_ids: list[str], origin: str) -> int:
+        return self._backend.mark_sim_order_event_origin(cl_ord_ids=cl_ord_ids, origin=origin)
+
+    def sim_order_event_origin_for(self, environment: str, cl_ord_id: str) -> str:
+        return self._backend.sim_order_event_origin_for(environment=environment, cl_ord_id=cl_ord_id)
 
     def create_automation_strategy(self, strategy: dict[str, Any]) -> dict[str, Any]:
         return self._backend.create_automation_strategy(strategy)
@@ -228,6 +289,9 @@ class Database:
     def list_automation_signals(self, strategy_id: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         return self._backend.list_automation_signals(strategy_id=strategy_id, limit=limit)
 
+    def list_automation_signals_since(self, strategy_id: int, since_ts: int) -> list[dict[str, Any]]:
+        return self._backend.list_automation_signals_since(strategy_id, since_ts)
+
     def latest_actionable_automation_signal(self, strategy_id: int) -> dict[str, Any] | None:
         return self._backend.latest_actionable_automation_signal(strategy_id)
 
@@ -242,6 +306,18 @@ class Database:
 
     def list_automation_execution_steps(self, signal_id: int) -> list[dict[str, Any]]:
         return self._backend.list_automation_execution_steps(signal_id)
+
+    def upsert_algo_order(self, order: dict[str, Any]) -> dict[str, Any]:
+        return self._backend.upsert_algo_order(order)
+
+    def get_algo_order_by_cl_id(self, algo_cl_ord_id: str) -> dict[str, Any] | None:
+        return self._backend.get_algo_order_by_cl_id(algo_cl_ord_id)
+
+    def list_algo_orders(self, strategy_id: int = 0, states: list[str] | None = None) -> list[dict[str, Any]]:
+        return self._backend.list_algo_orders(strategy_id=strategy_id, states=states)
+
+    def delete_algo_order(self, algo_cl_ord_id: str) -> None:
+        return self._backend.delete_algo_order(algo_cl_ord_id)
 
     def insert_automation_alert(self, alert: dict[str, Any]) -> dict[str, Any]:
         return self._backend.insert_automation_alert(alert)
@@ -398,7 +474,11 @@ class SqliteDatabase:
                     code TEXT,
                     message TEXT,
                     request_json TEXT NOT NULL,
-                    response_json TEXT NOT NULL
+                    response_json TEXT NOT NULL,
+                    pnl_usd TEXT,
+                    pnl_pct TEXT,
+                    pnl_basis TEXT,
+                    origin TEXT NOT NULL DEFAULT 'manual'
                 );
 
                 CREATE TABLE IF NOT EXISTS automation_strategies (
@@ -409,6 +489,8 @@ class SqliteDatabase:
                     archived_at INTEGER,
                     archived_reason TEXT NOT NULL DEFAULT '',
                     inst_id TEXT NOT NULL,
+                    inst_ids TEXT NOT NULL DEFAULT '[]',
+                    daily_position_pct TEXT NOT NULL DEFAULT '0',
                     bar TEXT NOT NULL,
                     template TEXT NOT NULL,
                     execution_mode TEXT NOT NULL,
@@ -513,6 +595,27 @@ class SqliteDatabase:
                     acknowledged_at INTEGER,
                     raw_json TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS automation_algo_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    algo_cl_ord_id TEXT NOT NULL UNIQUE,
+                    strategy_id INTEGER NOT NULL,
+                    inst_id TEXT NOT NULL,
+                    pos_side TEXT NOT NULL,
+                    td_mode TEXT NOT NULL DEFAULT 'cross',
+                    sz TEXT NOT NULL DEFAULT '',
+                    main_ord_id TEXT NOT NULL DEFAULT '',
+                    avg_px TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_algo_orders_strategy
+                    ON automation_algo_orders (strategy_id);
+                CREATE INDEX IF NOT EXISTS idx_algo_orders_state
+                    ON automation_algo_orders (state);
 
                 CREATE INDEX IF NOT EXISTS idx_sim_order_events_ts
                     ON sim_order_events (ts DESC);
@@ -621,11 +724,17 @@ class SqliteDatabase:
             self._ensure_column("account_snapshots", "environment", "TEXT NOT NULL DEFAULT 'live'")
             self._ensure_column("position_snapshots", "environment", "TEXT NOT NULL DEFAULT 'live'")
             self._ensure_column("sim_order_events", "environment", "TEXT NOT NULL DEFAULT 'simulated'")
+            self._ensure_column("sim_order_events", "pnl_usd", "TEXT")
+            self._ensure_column("sim_order_events", "pnl_pct", "TEXT")
+            self._ensure_column("sim_order_events", "pnl_basis", "TEXT")
+            self._ensure_column("sim_order_events", "origin", "TEXT NOT NULL DEFAULT 'manual'")
             self._ensure_column("automation_strategies", "archived", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column("automation_strategies", "archived_at", "INTEGER")
             self._ensure_column("automation_strategies", "archived_reason", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("automation_strategies", "take_profit_pct", "TEXT NOT NULL DEFAULT '0'")
             self._ensure_column("automation_strategies", "stop_loss_pct", "TEXT NOT NULL DEFAULT '0'")
+            self._ensure_column("automation_strategies", "inst_ids", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column("automation_strategies", "daily_position_pct", "TEXT NOT NULL DEFAULT '0'")
             self._ensure_column("llm_usage_logs", "profile_id", "TEXT")
             self._ensure_column("llm_usage_logs", "profile_version", "INTEGER")
             self._ensure_column("llm_usage_logs", "profile_hash", "TEXT")
@@ -967,6 +1076,19 @@ class SqliteDatabase:
             ).fetchone()
             return dict(row) if row else None
 
+    def position_snapshot_rows_between(self, environment: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT ts, inst_id, pos_side, pos, avg_px, mark_px, upl, upl_ratio, margin
+                FROM position_snapshots
+                WHERE environment = ? AND ts >= ? AND ts <= ?
+                ORDER BY ts DESC, id DESC
+                """,
+                (environment, from_ts, to_ts),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def insert_sim_order_event(self, event: dict[str, Any]) -> None:
         with self._lock:
             self.conn.execute(
@@ -974,8 +1096,8 @@ class SqliteDatabase:
                 INSERT INTO sim_order_events (
                     environment, ts, action, inst_id, td_mode, side, pos_side, ord_type,
                     px, sz, reduce_only, cl_ord_id, ord_id, state, code,
-                    message, request_json, response_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    message, request_json, response_json, pnl_usd, pnl_pct, pnl_basis, origin
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 sim_order_event_row(event),
             )
@@ -990,6 +1112,7 @@ class SqliteDatabase:
         keyword: str = "",
         action: str = "",
         state: str = "",
+        origin: str = "",
     ) -> list[dict[str, Any]]:
         keyword_like = f"%{keyword.upper()}%"
         with self._lock:
@@ -1000,6 +1123,7 @@ class SqliteDatabase:
                 WHERE environment = ? AND (? = '' OR inst_id = ?)
                   AND (? = '' OR action = ?)
                   AND (? = '' OR state = ?)
+                  AND (? = '' OR origin = ?)
                   AND (
                     ? = ''
                     OR UPPER(inst_id) LIKE ?
@@ -1019,6 +1143,8 @@ class SqliteDatabase:
                     action,
                     state,
                     state,
+                    origin,
+                    origin,
                     keyword,
                     keyword_like,
                     keyword_like,
@@ -1032,7 +1158,13 @@ class SqliteDatabase:
             return [dict(row) for row in rows]
 
     def count_sim_order_events(
-        self, environment: str, inst_id: str = "", keyword: str = "", action: str = "", state: str = ""
+        self,
+        environment: str,
+        inst_id: str = "",
+        keyword: str = "",
+        action: str = "",
+        state: str = "",
+        origin: str = "",
     ) -> int:
         keyword_like = f"%{keyword.upper()}%"
         with self._lock:
@@ -1043,6 +1175,7 @@ class SqliteDatabase:
                 WHERE environment = ? AND (? = '' OR inst_id = ?)
                   AND (? = '' OR action = ?)
                   AND (? = '' OR state = ?)
+                  AND (? = '' OR origin = ?)
                   AND (
                     ? = ''
                     OR UPPER(inst_id) LIKE ?
@@ -1060,6 +1193,8 @@ class SqliteDatabase:
                     action,
                     state,
                     state,
+                    origin,
+                    origin,
                     keyword,
                     keyword_like,
                     keyword_like,
@@ -1070,16 +1205,99 @@ class SqliteDatabase:
             ).fetchone()
             return int(row["total"]) if row else 0
 
+    def sim_order_event_origin_counts(
+        self,
+        environment: str,
+        inst_id: str = "",
+        keyword: str = "",
+        action: str = "",
+        state: str = "",
+    ) -> dict[str, int]:
+        keyword_like = f"%{keyword.upper()}%"
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT COALESCE(NULLIF(origin, ''), 'manual') AS origin, COUNT(*) AS total
+                FROM sim_order_events
+                WHERE environment = ? AND (? = '' OR inst_id = ?)
+                  AND (? = '' OR action = ?)
+                  AND (? = '' OR state = ?)
+                  AND (
+                    ? = ''
+                    OR UPPER(inst_id) LIKE ?
+                    OR UPPER(COALESCE(cl_ord_id, '')) LIKE ?
+                    OR UPPER(COALESCE(ord_id, '')) LIKE ?
+                    OR UPPER(COALESCE(code, '')) LIKE ?
+                    OR UPPER(COALESCE(message, '')) LIKE ?
+                  )
+                GROUP BY COALESCE(NULLIF(origin, ''), 'manual')
+                """,
+                (
+                    environment,
+                    inst_id.upper(),
+                    inst_id.upper(),
+                    action,
+                    action,
+                    state,
+                    state,
+                    keyword,
+                    keyword_like,
+                    keyword_like,
+                    keyword_like,
+                    keyword_like,
+                    keyword_like,
+                ),
+            ).fetchall()
+            return {str(row["origin"]): int(row["total"]) for row in rows}
+
+    def mark_sim_order_event_origin(self, cl_ord_ids: list[str], origin: str) -> int:
+        ids = [str(item).strip() for item in cl_ord_ids or [] if str(item or "").strip()]
+        if not ids or not origin:
+            return 0
+        updated = 0
+        with self._lock:
+            for start in range(0, len(ids), 200):
+                chunk = ids[start : start + 200]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor = self.conn.execute(
+                    f"""
+                    UPDATE sim_order_events
+                    SET origin = ?
+                    WHERE cl_ord_id IN ({placeholders}) AND COALESCE(origin, '') != ?
+                    """,
+                    (origin, *chunk, origin),
+                )
+                updated += int(cursor.rowcount or 0)
+            self.conn.commit()
+        return updated
+
+    def sim_order_event_origin_for(self, environment: str, cl_ord_id: str) -> str:
+        target = str(cl_ord_id or "").strip()
+        if not target:
+            return ""
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT origin
+                FROM sim_order_events
+                WHERE environment = ? AND cl_ord_id = ? AND COALESCE(origin, '') != ''
+                ORDER BY ts DESC, id DESC
+                LIMIT 1
+                """,
+                (environment, target),
+            ).fetchone()
+            return str(row["origin"]) if row else ""
+
     def create_automation_strategy(self, strategy: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             cursor = self.conn.execute(
                 """
                 INSERT INTO automation_strategies (
-                    name, enabled, archived, archived_at, archived_reason, inst_id, bar, template, execution_mode, td_mode,
+                    name, enabled, archived, archived_at, archived_reason, inst_id, inst_ids, daily_position_pct, bar, template, execution_mode, td_mode,
                     ord_type, sz, fast_window, slow_window, max_order_contracts,
                     max_position_contracts, cooldown_seconds, take_profit_pct, stop_loss_pct,
                     last_eval_ts, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 automation_strategy_row(strategy),
             )
@@ -1091,7 +1309,7 @@ class SqliteDatabase:
             self.conn.execute(
                 """
                 UPDATE automation_strategies
-                SET name = ?, enabled = ?, archived = ?, archived_at = ?, archived_reason = ?, inst_id = ?, bar = ?, template = ?, execution_mode = ?,
+                SET name = ?, enabled = ?, archived = ?, archived_at = ?, archived_reason = ?, inst_id = ?, inst_ids = ?, daily_position_pct = ?, bar = ?, template = ?, execution_mode = ?,
                     td_mode = ?, ord_type = ?, sz = ?, fast_window = ?, slow_window = ?,
                     max_order_contracts = ?, max_position_contracts = ?, cooldown_seconds = ?,
                     take_profit_pct = ?, stop_loss_pct = ?, last_eval_ts = ?, updated_at = ?
@@ -1185,13 +1403,26 @@ class SqliteDatabase:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def list_automation_signals_since(self, strategy_id: int, since_ts: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT s.*
+                FROM automation_signals s
+                WHERE s.strategy_id = ? AND s.ts >= ?
+                ORDER BY s.ts DESC, s.id DESC
+                """,
+                (strategy_id, since_ts),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def latest_actionable_automation_signal(self, strategy_id: int) -> dict[str, Any] | None:
         with self._lock:
             row = self.conn.execute(
                 """
                 SELECT *
                 FROM automation_signals
-                WHERE strategy_id = ? AND action <> 'hold'
+                WHERE strategy_id = ? AND action IN ('long', 'short')
                 ORDER BY ts DESC, id DESC
                 LIMIT 1
                 """,
@@ -1278,6 +1509,60 @@ class SqliteDatabase:
                 (signal_id,),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def upsert_algo_order(self, order: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO automation_algo_orders (
+                    algo_cl_ord_id, strategy_id, inst_id, pos_side, td_mode, sz,
+                    main_ord_id, avg_px, state, detail, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(algo_cl_ord_id) DO UPDATE SET
+                    state=excluded.state,
+                    main_ord_id=excluded.main_ord_id,
+                    avg_px=excluded.avg_px,
+                    detail=excluded.detail,
+                    updated_at=excluded.updated_at
+                """,
+                _algo_order_row(order),
+            )
+            self.conn.commit()
+            row = self.conn.execute(
+                "SELECT * FROM automation_algo_orders WHERE algo_cl_ord_id = ?",
+                (str(order.get("algo_cl_ord_id") or ""),),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def get_algo_order_by_cl_id(self, algo_cl_ord_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM automation_algo_orders WHERE algo_cl_ord_id = ?",
+                (algo_cl_ord_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_algo_orders(self, strategy_id: int = 0, states: list[str] | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            clauses = ["(? = 0 OR strategy_id = ?)"]
+            params: list[Any] = [strategy_id, strategy_id]
+            if states:
+                placeholders = ",".join("?" for _ in states)
+                clauses.append(f"state IN ({placeholders})")
+                params.extend(states)
+            rows = self.conn.execute(
+                f"SELECT * FROM automation_algo_orders WHERE {' AND '.join(clauses)} ORDER BY created_at DESC, id DESC",
+                tuple(params),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def delete_algo_order(self, algo_cl_ord_id: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM automation_algo_orders WHERE algo_cl_ord_id = ?",
+                (algo_cl_ord_id,),
+            )
+            self.conn.commit()
 
     def insert_automation_alert(self, alert: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -1541,7 +1826,11 @@ class PostgresDatabase:
                         code TEXT,
                         message TEXT,
                         request_json TEXT NOT NULL,
-                        response_json TEXT NOT NULL
+                        response_json TEXT NOT NULL,
+                        pnl_usd TEXT,
+                        pnl_pct TEXT,
+                        pnl_basis TEXT,
+                        origin TEXT NOT NULL DEFAULT 'manual'
                     );
 
                     CREATE TABLE IF NOT EXISTS automation_strategies (
@@ -1552,6 +1841,8 @@ class PostgresDatabase:
                         archived_at BIGINT,
                         archived_reason TEXT NOT NULL DEFAULT '',
                         inst_id TEXT NOT NULL,
+                        inst_ids TEXT NOT NULL DEFAULT '[]',
+                        daily_position_pct TEXT NOT NULL DEFAULT '0',
                         bar TEXT NOT NULL,
                         template TEXT NOT NULL,
                         execution_mode TEXT NOT NULL,
@@ -1656,6 +1947,26 @@ class PostgresDatabase:
                         acknowledged_at BIGINT,
                         raw_json TEXT NOT NULL
                     );
+
+                    CREATE TABLE IF NOT EXISTS automation_algo_orders (
+                        id BIGSERIAL PRIMARY KEY,
+                        algo_cl_ord_id TEXT NOT NULL UNIQUE,
+                        strategy_id BIGINT NOT NULL,
+                        inst_id TEXT NOT NULL,
+                        pos_side TEXT NOT NULL,
+                        td_mode TEXT NOT NULL DEFAULT 'cross',
+                        sz TEXT NOT NULL DEFAULT '',
+                        main_ord_id TEXT NOT NULL DEFAULT '',
+                        avg_px TEXT NOT NULL DEFAULT '',
+                        state TEXT NOT NULL DEFAULT 'pending',
+                        detail TEXT NOT NULL DEFAULT '',
+                        created_at BIGINT NOT NULL,
+                        updated_at BIGINT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_algo_orders_strategy
+                        ON automation_algo_orders (strategy_id);
+                    CREATE INDEX IF NOT EXISTS idx_algo_orders_state
+                        ON automation_algo_orders (state);
 
                     CREATE INDEX IF NOT EXISTS idx_candles_lookup
                         ON candles (inst_id, bar, ts DESC);
@@ -1770,11 +2081,17 @@ class PostgresDatabase:
                 cur.execute("ALTER TABLE account_snapshots ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT 'live'")
                 cur.execute("ALTER TABLE position_snapshots ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT 'live'")
                 cur.execute("ALTER TABLE sim_order_events ADD COLUMN IF NOT EXISTS environment TEXT NOT NULL DEFAULT 'simulated'")
+                cur.execute("ALTER TABLE sim_order_events ADD COLUMN IF NOT EXISTS pnl_usd TEXT")
+                cur.execute("ALTER TABLE sim_order_events ADD COLUMN IF NOT EXISTS pnl_pct TEXT")
+                cur.execute("ALTER TABLE sim_order_events ADD COLUMN IF NOT EXISTS pnl_basis TEXT")
+                cur.execute("ALTER TABLE sim_order_events ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'manual'")
                 cur.execute("ALTER TABLE automation_strategies ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE")
                 cur.execute("ALTER TABLE automation_strategies ADD COLUMN IF NOT EXISTS archived_at BIGINT")
                 cur.execute("ALTER TABLE automation_strategies ADD COLUMN IF NOT EXISTS archived_reason TEXT NOT NULL DEFAULT ''")
                 cur.execute("ALTER TABLE automation_strategies ADD COLUMN IF NOT EXISTS take_profit_pct TEXT NOT NULL DEFAULT '0'")
                 cur.execute("ALTER TABLE automation_strategies ADD COLUMN IF NOT EXISTS stop_loss_pct TEXT NOT NULL DEFAULT '0'")
+                cur.execute("ALTER TABLE automation_strategies ADD COLUMN IF NOT EXISTS inst_ids TEXT NOT NULL DEFAULT '[]'")
+                cur.execute("ALTER TABLE automation_strategies ADD COLUMN IF NOT EXISTS daily_position_pct TEXT NOT NULL DEFAULT '0'")
                 cur.execute("ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS profile_id TEXT")
                 cur.execute("ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS profile_version INTEGER")
                 cur.execute("ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS profile_hash TEXT")
@@ -2096,14 +2413,29 @@ class PostgresDatabase:
                 row = cur.fetchone()
                 return dict(row) if row else None
 
+    def position_snapshot_rows_between(self, environment: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT ts, inst_id, pos_side, pos, avg_px, mark_px, upl, upl_ratio, margin
+                    FROM position_snapshots
+                    WHERE environment = %s AND ts >= %s AND ts <= %s
+                    ORDER BY ts DESC, id DESC
+                    """,
+                    (environment, from_ts, to_ts),
+                )
+                return list(cur.fetchall())
+
     def insert_sim_order_event(self, event: dict[str, Any]) -> None:
         self._execute(
             """
             INSERT INTO sim_order_events (
                 environment, ts, action, inst_id, td_mode, side, pos_side, ord_type,
                 px, sz, reduce_only, cl_ord_id, ord_id, state, code,
-                message, request_json, response_json
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                message, request_json, response_json, pnl_usd, pnl_pct, pnl_basis, origin
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             sim_order_event_row(event),
         )
@@ -2117,6 +2449,7 @@ class PostgresDatabase:
         keyword: str = "",
         action: str = "",
         state: str = "",
+        origin: str = "",
     ) -> list[dict[str, Any]]:
         keyword_like = f"%{keyword.upper()}%"
         with self._lock:
@@ -2129,6 +2462,7 @@ class PostgresDatabase:
                     WHERE environment = %s AND (%s = '' OR inst_id = %s)
                       AND (%s = '' OR action = %s)
                       AND (%s = '' OR state = %s)
+                      AND (%s = '' OR origin = %s)
                       AND (
                         %s = ''
                         OR UPPER(inst_id) LIKE %s
@@ -2148,6 +2482,8 @@ class PostgresDatabase:
                         action,
                         state,
                         state,
+                        origin,
+                        origin,
                         keyword,
                         keyword_like,
                         keyword_like,
@@ -2161,7 +2497,13 @@ class PostgresDatabase:
                 return list(cur.fetchall())
 
     def count_sim_order_events(
-        self, environment: str, inst_id: str = "", keyword: str = "", action: str = "", state: str = ""
+        self,
+        environment: str,
+        inst_id: str = "",
+        keyword: str = "",
+        action: str = "",
+        state: str = "",
+        origin: str = "",
     ) -> int:
         keyword_like = f"%{keyword.upper()}%"
         with self._lock:
@@ -2174,6 +2516,7 @@ class PostgresDatabase:
                     WHERE environment = %s AND (%s = '' OR inst_id = %s)
                       AND (%s = '' OR action = %s)
                       AND (%s = '' OR state = %s)
+                      AND (%s = '' OR origin = %s)
                       AND (
                         %s = ''
                         OR UPPER(inst_id) LIKE %s
@@ -2191,6 +2534,8 @@ class PostgresDatabase:
                         action,
                         state,
                         state,
+                        origin,
+                        origin,
                         keyword,
                         keyword_like,
                         keyword_like,
@@ -2202,6 +2547,95 @@ class PostgresDatabase:
                 row = cur.fetchone()
                 return int(row["total"]) if row else 0
 
+    def sim_order_event_origin_counts(
+        self,
+        environment: str,
+        inst_id: str = "",
+        keyword: str = "",
+        action: str = "",
+        state: str = "",
+    ) -> dict[str, int]:
+        keyword_like = f"%{keyword.upper()}%"
+        with self._lock:
+            conn = self._connect()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COALESCE(NULLIF(origin, ''), 'manual') AS origin, COUNT(*) AS total
+                    FROM sim_order_events
+                    WHERE environment = %s AND (%s = '' OR inst_id = %s)
+                      AND (%s = '' OR action = %s)
+                      AND (%s = '' OR state = %s)
+                      AND (
+                        %s = ''
+                        OR UPPER(inst_id) LIKE %s
+                        OR UPPER(COALESCE(cl_ord_id, '')) LIKE %s
+                        OR UPPER(COALESCE(ord_id, '')) LIKE %s
+                        OR UPPER(COALESCE(code, '')) LIKE %s
+                        OR UPPER(COALESCE(message, '')) LIKE %s
+                      )
+                    GROUP BY COALESCE(NULLIF(origin, ''), 'manual')
+                    """,
+                    (
+                        environment,
+                        inst_id.upper(),
+                        inst_id.upper(),
+                        action,
+                        action,
+                        state,
+                        state,
+                        keyword,
+                        keyword_like,
+                        keyword_like,
+                        keyword_like,
+                        keyword_like,
+                        keyword_like,
+                    ),
+                )
+                return {str(row["origin"]): int(row["total"]) for row in cur.fetchall()}
+
+    def mark_sim_order_event_origin(self, cl_ord_ids: list[str], origin: str) -> int:
+        ids = [str(item).strip() for item in cl_ord_ids or [] if str(item or "").strip()]
+        if not ids or not origin:
+            return 0
+        updated = 0
+        with self._lock:
+            conn = self._connect()
+            with conn.cursor() as cur:
+                for start in range(0, len(ids), 200):
+                    chunk = ids[start : start + 200]
+                    cur.execute(
+                        """
+                        UPDATE sim_order_events
+                        SET origin = %s
+                        WHERE cl_ord_id = ANY(%s) AND COALESCE(origin, '') != %s
+                        """,
+                        (origin, chunk, origin),
+                    )
+                    updated += int(cur.rowcount or 0)
+                conn.commit()
+        return updated
+
+    def sim_order_event_origin_for(self, environment: str, cl_ord_id: str) -> str:
+        target = str(cl_ord_id or "").strip()
+        if not target:
+            return ""
+        with self._lock:
+            conn = self._connect()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT origin
+                    FROM sim_order_events
+                    WHERE environment = %s AND cl_ord_id = %s AND COALESCE(origin, '') != ''
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (environment, target),
+                )
+                row = cur.fetchone()
+                return str(row["origin"]) if row else ""
+
     def create_automation_strategy(self, strategy: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             conn = self._connect()
@@ -2209,11 +2643,11 @@ class PostgresDatabase:
                 cur.execute(
                     """
                     INSERT INTO automation_strategies (
-                        name, enabled, archived, archived_at, archived_reason, inst_id, bar, template, execution_mode, td_mode,
+                        name, enabled, archived, archived_at, archived_reason, inst_id, inst_ids, daily_position_pct, bar, template, execution_mode, td_mode,
                         ord_type, sz, fast_window, slow_window, max_order_contracts,
                         max_position_contracts, cooldown_seconds, take_profit_pct, stop_loss_pct,
                         last_eval_ts, created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     automation_strategy_row(strategy),
@@ -2229,7 +2663,7 @@ class PostgresDatabase:
                 cur.execute(
                     """
                     UPDATE automation_strategies
-                    SET name = %s, enabled = %s, archived = %s, archived_at = %s, archived_reason = %s, inst_id = %s, bar = %s, template = %s, execution_mode = %s,
+                    SET name = %s, enabled = %s, archived = %s, archived_at = %s, archived_reason = %s, inst_id = %s, inst_ids = %s, daily_position_pct = %s, bar = %s, template = %s, execution_mode = %s,
                         td_mode = %s, ord_type = %s, sz = %s, fast_window = %s, slow_window = %s,
                         max_order_contracts = %s, max_position_contracts = %s, cooldown_seconds = %s,
                         take_profit_pct = %s, stop_loss_pct = %s, last_eval_ts = %s, updated_at = %s
@@ -2333,6 +2767,21 @@ class PostgresDatabase:
                 )
                 return list(cur.fetchall())
 
+    def list_automation_signals_since(self, strategy_id: int, since_ts: int) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.*
+                    FROM automation_signals s
+                    WHERE s.strategy_id = %s AND s.ts >= %s
+                    ORDER BY s.ts DESC, s.id DESC
+                    """,
+                    (strategy_id, since_ts),
+                )
+                return list(cur.fetchall())
+
     def latest_actionable_automation_signal(self, strategy_id: int) -> dict[str, Any] | None:
         with self._lock:
             conn = self._connect()
@@ -2341,7 +2790,7 @@ class PostgresDatabase:
                     """
                     SELECT *
                     FROM automation_signals
-                    WHERE strategy_id = %s AND action <> 'hold'
+                    WHERE strategy_id = %s AND action IN ('long', 'short')
                     ORDER BY ts DESC, id DESC
                     LIMIT 1
                     """,
@@ -2444,6 +2893,66 @@ class PostgresDatabase:
                     (signal_id,),
                 )
                 return list(cur.fetchall())
+
+    def upsert_algo_order(self, order: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            conn = self._connect()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO automation_algo_orders (
+                        algo_cl_ord_id, strategy_id, inst_id, pos_side, td_mode, sz,
+                        main_ord_id, avg_px, state, detail, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(algo_cl_ord_id) DO UPDATE SET
+                        state=excluded.state,
+                        main_ord_id=excluded.main_ord_id,
+                        avg_px=excluded.avg_px,
+                        detail=excluded.detail,
+                        updated_at=excluded.updated_at
+                    """,
+                    _algo_order_row(order),
+                )
+            conn.commit()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM automation_algo_orders WHERE algo_cl_ord_id = %s",
+                    (str(order.get("algo_cl_ord_id") or ""),),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else {}
+
+    def get_algo_order_by_cl_id(self, algo_cl_ord_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM automation_algo_orders WHERE algo_cl_ord_id = %s", (algo_cl_ord_id,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+
+    def list_algo_orders(self, strategy_id: int = 0, states: list[str] | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            clauses = ["(%s = 0 OR strategy_id = %s)"]
+            params: list[Any] = [strategy_id, strategy_id]
+            if states:
+                placeholders = ",".join("%s" for _ in states)
+                clauses.append(f"state IN ({placeholders})")
+                params.extend(states)
+            sql = (
+                f"SELECT * FROM automation_algo_orders WHERE {' AND '.join(clauses)} "
+                "ORDER BY created_at DESC, id DESC"
+            )
+            conn = self._connect()
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                return [dict(row) for row in cur.fetchall()]
+
+    def delete_algo_order(self, algo_cl_ord_id: str) -> None:
+        with self._lock:
+            conn = self._connect()
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM automation_algo_orders WHERE algo_cl_ord_id = %s", (algo_cl_ord_id,))
+            conn.commit()
 
     def insert_automation_alert(self, alert: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -2811,6 +3320,10 @@ def sim_order_event_row(event: dict[str, Any]) -> tuple[Any, ...]:
         event.get("message"),
         event["request_json"],
         event["response_json"],
+        event.get("pnl_usd"),
+        event.get("pnl_pct"),
+        event.get("pnl_basis"),
+        event.get("origin") or "manual",
     )
 
 
@@ -2822,6 +3335,8 @@ def automation_strategy_row(strategy: dict[str, Any]) -> tuple[Any, ...]:
         strategy.get("archived_at"),
         strategy.get("archived_reason") or "",
         strategy["inst_id"],
+        str(strategy.get("inst_ids") or "[]"),
+        str(strategy.get("daily_position_pct") or "0"),
         strategy["bar"],
         strategy["template"],
         strategy["execution_mode"],
@@ -2849,6 +3364,8 @@ def automation_strategy_update_row(strategy: dict[str, Any], strategy_id: int) -
         strategy.get("archived_at"),
         strategy.get("archived_reason") or "",
         strategy["inst_id"],
+        str(strategy.get("inst_ids") or "[]"),
+        str(strategy.get("daily_position_pct") or "0"),
         strategy["bar"],
         strategy["template"],
         strategy["execution_mode"],
@@ -2885,6 +3402,23 @@ def automation_signal_row(signal: dict[str, Any]) -> tuple[Any, ...]:
         signal.get("reason"),
         signal.get("message"),
         signal["raw_json"],
+    )
+
+
+def _algo_order_row(order: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(order["algo_cl_ord_id"]),
+        int(order["strategy_id"]),
+        str(order["inst_id"]),
+        str(order.get("pos_side") or ""),
+        str(order.get("td_mode") or "cross"),
+        str(order.get("sz") or ""),
+        str(order.get("main_ord_id") or ""),
+        str(order.get("avg_px") or ""),
+        str(order.get("state") or "pending"),
+        str(order.get("detail") or ""),
+        int(order["created_at"]),
+        int(order["updated_at"]),
     )
 
 

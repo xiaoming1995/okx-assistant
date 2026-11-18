@@ -27,9 +27,10 @@ import {
   TextInput,
   Textarea,
   ThemeIcon,
+  Tooltip,
   UnstyledButton
 } from "@mantine/core";
-import { Notifications } from "@mantine/notifications";
+import { Notifications, notifications } from "@mantine/notifications";
 import { DateInput, DatesProvider } from "@mantine/dates";
 import "dayjs/locale/zh-cn";
 import {
@@ -56,6 +57,7 @@ import {
   PencilSimpleIcon as Pencil,
   PlayIcon as Play,
   ArrowsClockwiseIcon as RefreshCw,
+  ReceiptIcon as Receipt,
   MagnifyingGlassIcon as Search,
   PaperPlaneTiltIcon as Send,
   ShieldWarningIcon as ShieldAlert,
@@ -65,6 +67,7 @@ import {
   TrendUpIcon as TrendingUp,
   XCircleIcon as XCircle,
   UserGearIcon as UserCog,
+  SlidersHorizontalIcon as SlidersHorizontal,
   WalletIcon as WalletCards
 } from "@phosphor-icons/react";
 import {
@@ -90,7 +93,7 @@ import "@mantine/notifications/styles.css";
 import "@mantine/dates/styles.css";
 import "./styles.css";
 
-type PrimarySection = "market" | "trade" | "automation" | "account" | "settings";
+type PrimarySection = "market" | "trade" | "orders" | "automation" | "account" | "settings";
 type MarketTab = "radar" | "chart" | "aiOutlook" | "aiRecords" | "stats" | "announcements" | "usTimeline" | "overview";
 type AutomationTab = "overview" | "strategies" | "signals" | "signalDetail";
 type AccountTab = "positions" | "account" | "earn";
@@ -112,6 +115,26 @@ type UsMarketEvent = { id: string; title: string; category: string; importance: 
 type UsMarketProviderStatus = { provider: string; status: "fresh" | "retained" | "unavailable"; eventCount?: number; retainedCount?: number; message?: string; };
 type UsMarketEventsResponse = { data: UsMarketEvent[]; warnings?: string[]; providers?: string[]; providerStatuses?: UsMarketProviderStatus[]; cacheAgeMs?: number; refreshing?: boolean; };
 type PlatformVolumeResponse = { data: { volUsd: string; ts: number } | null; state: "fresh" | "cached" | "loading" | "unavailable"; message: string; source: string; cacheAgeMs?: number | null; ts?: number | null; };
+type VolumeHistoryPoint = { date: string; ts: number; volUsd: string; count: number; confirm: string };
+type VolumePeriod = "day" | "week" | "month" | "year";
+type VolumeHistoryResponse = {
+  data: {
+    daily: VolumeHistoryPoint[];
+    instrumentCount: number;
+    requestedCount: number;
+    universeCount: number;
+    coveragePct: number;
+    startDate: string;
+    endDate: string;
+    quoteCurrency: string;
+    source: string;
+  } | null;
+  state: "fresh" | "cached" | "loading" | "unavailable";
+  message: string;
+  source: string;
+  cacheAgeMs?: number | null;
+  ts?: number | null;
+};
 
 type Instrument = {
   inst_id: string;
@@ -970,6 +993,8 @@ type RadarResult = {
   reasons: string[];
   warnings: string[];
   explainedBy?: string;
+  direction?: "long" | "short" | "neutral" | string;
+  entryZone?: string;
 };
 
 type RadarResponse = {
@@ -993,10 +1018,13 @@ type RadarAnalysisWatchItem = {
   instId: string;
   reason: string;
   riskNote: string;
+  direction?: string;
+  entryZone?: string;
 };
 
 type RadarMarketAnalysis = {
   marketRegime: "trend" | "range" | "mixed" | "risk-off" | string;
+  marketBias?: "long" | "short" | "neutral" | string;
   confidence: number;
   summary: string;
   highlights: string[];
@@ -1005,6 +1033,16 @@ type RadarMarketAnalysis = {
   suggestedFilters: string[];
   generatedAt?: number;
   source?: string;
+  status?: string;
+  originSource?: string;
+  setupGuide?: {
+    title?: string;
+    description?: string;
+    steps?: string[];
+    requiredFields?: string[];
+    providerHint?: string;
+    settingsPath?: string;
+  };
   warnings?: string[];
   scanTs?: number;
   cacheAgeMs?: number | null;
@@ -1014,6 +1052,21 @@ type RadarMarketAnalysis = {
     liquidity?: Record<string, string | number | boolean | null>;
     volatility?: Record<string, string | number | boolean | null>;
     risk?: Record<string, string | number | boolean | null>;
+    sentiment?: {
+      funding?: {
+        sampled?: number;
+        positive?: number;
+        negative?: number;
+        neutral?: number;
+        avgFundingRate?: string;
+        avgFundingRatePct?: string;
+      };
+      openInterest?: {
+        sampled?: number;
+        maxOiUsd?: string;
+        medianOiUsd?: string;
+      };
+    };
   };
 };
 
@@ -1029,6 +1082,9 @@ type AutomationStrategy = {
   archived_at?: number | null;
   archived_reason?: string;
   inst_id: string;
+  instIds?: string[];
+  dailyPositionPct?: string;
+  daily_position_pct?: string;
   bar: string;
   template: string;
   execution_mode: "signal_only" | "simulated_auto";
@@ -1139,8 +1195,38 @@ type AutomationStatus = {
   circuitReason?: string;
   circuitTriggeredAt?: number;
   globalStateUpdatedAt?: number;
+  // 后端风控闸门新增：false 表示全局安全状态读取失败，引擎已 fail-closed 拒绝交易。
+  // 字段缺失说明连接的仍是旧版后端（尚未部署加固代码）。
+  globalStateAvailable?: boolean;
   alertCount?: number;
   criticalAlertCount?: number;
+  // 后端 AUTOMATION_LLM_MIN_CONFIDENCE，低于该置信度不自动下单。
+  llmMinConfidence?: number;
+};
+
+// 与 /api/automation/equity 对应：口径与后端每日仓位风控完全一致（只取模拟盘）。
+type AutomationEquity = {
+  environment?: string;
+  configured?: boolean;
+  available?: boolean;
+  currency?: string;
+  totalEq?: string;
+  availEq?: string;
+  equity?: string;
+  equityBasis?: string;
+  dailyPositionPct?: string;
+  pctInvalid?: boolean;
+  dailyLimit?: string;
+  dailyUsed?: string;
+  dailyUsedAvailable?: boolean;
+  dailyRemaining?: string;
+  dailyDayStart?: number;
+  dailyResetAt?: number;
+  source?: string;
+  snapshotTs?: number;
+  updatedAt?: number;
+  warning?: string;
+  message?: string;
 };
 
 type AutomationAlert = {
@@ -1295,7 +1381,6 @@ type LlmConfigForm = {
   temperature: string;
   maxTokens: string;
   timeoutSeconds: string;
-  mode: string;
   systemPrompt: string;
 };
 
@@ -1337,6 +1422,8 @@ type LlmAnalysis = {
 type AutomationStrategyForm = {
   name: string;
   instId: string;
+  instIds: string[];
+  dailyPositionPct: string;
   bar: string;
   template: string;
   executionMode: string;
@@ -1345,7 +1432,6 @@ type AutomationStrategyForm = {
   sz: string;
   fastWindow: string;
   slowWindow: string;
-  maxOrderContracts: string;
   maxPositionContracts: string;
   cooldownSeconds: string;
   takeProfitPct: string;
@@ -1382,6 +1468,23 @@ type SettingsStatus = {
   };
 };
 
+type PendingOrder = {
+  instId?: string;
+  ordId?: string;
+  clOrdId?: string;
+  px?: string;
+  sz?: string;
+  accFillSz?: string;
+  fillSz?: string;
+  side?: string;
+  posSide?: string;
+  tdMode?: string;
+  ordType?: string;
+  state?: string;
+  ctime?: string | number;
+  utime?: string | number;
+};
+
 type SimOrderEvent = {
   id?: number;
   environment?: "simulated" | "live";
@@ -1400,6 +1503,20 @@ type SimOrderEvent = {
   state?: string;
   code?: string;
   message?: string;
+  pnl_usd?: string | null;
+  pnl_pct?: string | null;
+  pnl_basis?: string | null;
+  pnl_gross?: string | null;
+  pnl_fee?: string | null;
+  pnl_settled?: boolean;
+  bill_count?: number;
+  pnl_note?: string | null;
+  strategy_id?: number | null;
+  strategy_name?: string | null;
+  signal_id?: number | null;
+  close_strategy_id?: number | null;
+  close_strategy_name?: string | null;
+  origin?: "manual" | "automation" | string | null;
 };
 
 type LeverageInfo = Record<string, string>;
@@ -1425,6 +1542,8 @@ type SimOrdersResponse = {
   tradeEnabled: boolean;
   liveTradingEnabled?: boolean;
   events: SimOrderEvent[];
+  pending?: PendingOrder[];
+  cacheAgeMs?: number | null;
   paging?: {
     limit: number;
     offset: number;
@@ -1434,8 +1553,20 @@ type SimOrdersResponse = {
     pageCount: number;
   };
   source?: string;
+  origin?: string;
+  originCounts?: {
+    manual: number;
+    automation: number;
+    all: number;
+  };
   message?: string;
   warning?: string;
+  pnlSummary?: {
+    pageRealizedTotal: string;
+    pricedCloses: number;
+    closeCount: number;
+    settledCloses?: number;
+  };
   ts?: number;
 };
 
@@ -1464,6 +1595,9 @@ const marketStatsPeriodMs: Record<string, number> = {
 const TICKER_POLL_MS = 15000;
 const ACCOUNT_POLL_MS = 20000;
 const ORDER_POLL_MS = 10000;
+// 账户刷新最小间隔：WS 私有频道与 REST 轮询共用同一刷新入口，短窗口内合并，
+// 避免高频 account.update/position.update 事件放大 /api/account 调用。
+const ACCOUNT_REFRESH_MIN_MS = 1500;
 const MAX_TRADE_INSTRUMENT_OPTIONS = 120;
 const DEFAULT_LLM_TIMEOUT_SECONDS = 20;
 const instrumentFilters: Array<{ key: InstrumentFilter; label: string }> = [
@@ -1491,17 +1625,19 @@ const tradeModeOptions: SegmentedOption[] = [
   { key: "cross", label: "全仓", icon: <ShieldCheck size={14} aria-hidden="true" />, title: "全仓保证金模式" },
   { key: "isolated", label: "逐仓", icon: <ShieldAlert size={14} aria-hidden="true" />, title: "逐仓保证金模式" }
 ];
+// 交易方向/常用类型的分段按钮不嵌图标：14px 的趋势箭头、K线、纸飞机在紧凑按钮里
+// 会被挤压成难辨的怪符号（用户反馈像乱码）。只保留文字 + title 悬浮说明，选中态用底色/配色区分。
 const sideOptions: SegmentedOption[] = [
-  { key: "buy", label: "做多", icon: <TrendingUp size={14} aria-hidden="true" />, title: "买入开多" },
-  { key: "sell", label: "做空", icon: <TrendingDown size={14} aria-hidden="true" />, title: "卖出开空" }
+  { key: "buy", label: "做多", title: "买入开多" },
+  { key: "sell", label: "做空", title: "卖出开空" }
 ];
 const reduceOnlySideOptions: SegmentedOption[] = [
-  { key: "buy", label: "平空", icon: <TrendingUp size={14} aria-hidden="true" />, title: "买入平空，只减仓" },
-  { key: "sell", label: "平多", icon: <TrendingDown size={14} aria-hidden="true" />, title: "卖出平多，只减仓" }
+  { key: "buy", label: "平空", title: "买入平空，只减仓" },
+  { key: "sell", label: "平多", title: "卖出平多，只减仓" }
 ];
 const orderTypeOptions: SegmentedOption[] = [
-  { key: "limit", label: "限价", icon: <ChartCandlestick size={14} aria-hidden="true" />, title: "按指定价格挂单" },
-  { key: "market", label: "市价", icon: <Send size={14} aria-hidden="true" />, title: "按市场价格立即提交" },
+  { key: "limit", label: "限价", title: "按指定价格挂单" },
+  { key: "market", label: "市价", title: "按市场价格立即提交" },
   { key: "post_only", label: "Post only", title: "只做 maker，无法挂单时取消" },
   { key: "ioc", label: "IOC", title: "立即成交剩余撤销" },
   { key: "fok", label: "FOK", title: "全部成交否则取消" },
@@ -1564,12 +1700,39 @@ const automationOrderTypeOptions: SegmentedOption[] = [
   { key: "market", label: "市价", icon: <Send size={14} aria-hidden="true" /> },
   { key: "limit", label: "限价", icon: <ChartCandlestick size={14} aria-hidden="true" /> }
 ];
+// 周期在界面上统一显示为中文，底层仍传 1m / 5m / 15m / 1H 给后端。
+const automationBarLabels: Record<string, string> = {
+  "1m": "1 分钟",
+  "3m": "3 分钟",
+  "5m": "5 分钟",
+  "15m": "15 分钟",
+  "30m": "30 分钟",
+  "1H": "1 小时",
+  "2H": "2 小时",
+  "4H": "4 小时",
+  "6H": "6 小时",
+  "12H": "12 小时",
+  "1D": "1 天"
+};
+
+function automationBarLabel(bar?: string): string {
+  const key = String(bar || "").trim();
+  return automationBarLabels[key] ?? (key || "--");
+}
+
 const automationBarOptions: SegmentedOption[] = [
-  { key: "5m", label: "5m" },
-  { key: "15m", label: "15m" },
-  { key: "1H", label: "1H" },
-  { key: "1m", label: "1m", title: "高级：频率更高，噪音和成本也更高" }
+  { key: "5m", label: automationBarLabel("5m") },
+  { key: "15m", label: automationBarLabel("15m") },
+  { key: "1H", label: automationBarLabel("1H") },
+  { key: "1m", label: automationBarLabel("1m"), title: "高级：频率更高，噪音和成本也更高" }
 ];
+// 每个周期的评估上限（次/天/合约）：一天 1440 分钟 ÷ 周期分钟数。
+const automationBarCadence: Record<string, { cadence: string; perDay: number }> = {
+  "1m": { cadence: "每分钟", perDay: 1440 },
+  "5m": { cadence: "每 5 分钟", perDay: 288 },
+  "15m": { cadence: "每 15 分钟", perDay: 96 },
+  "1H": { cadence: "每小时", perDay: 24 }
+};
 const automationStylePresets = [
   { key: "conservative", label: "稳健", fast: "10", slow: "30", cooldown: "600", note: "信号少" },
   { key: "standard", label: "标准", fast: "5", slow: "20", cooldown: "300", note: "默认" },
@@ -1603,19 +1766,20 @@ const llmUsageStatusFilters: SegmentedOption[] = [
   { key: "failed", label: "失败", icon: <XCircle size={14} aria-hidden="true" /> },
   { key: "timeout", label: "超时", icon: <AlertTriangle size={14} aria-hidden="true" /> }
 ];
-const llmModeOptions: SegmentedOption[] = [
-  { key: "explain_only", label: "只解释信号", icon: <Info size={14} aria-hidden="true" /> },
-  { key: "review", label: "复核信号", icon: <ShieldCheck size={14} aria-hidden="true" /> },
-  { key: "direct_signal", label: "直接信号", icon: <BrainCircuit size={14} aria-hidden="true" /> }
-];
 const llmProviderPresets: LlmProviderPreset[] = [
   {
     key: "openai",
     label: "OpenAI",
     provider: "openai_compatible",
     baseUrl: "https://api.openai.com/v1",
-    models: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"],
-    note: "官方 OpenAI 兼容接口"
+    models: ["gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra"],
+    modelNotes: {
+      "gpt-6-luna": "GPT-6 Luna，成本最低、响应快，适合高频信号分析",
+      "gpt-6.1-terra": "GPT-6.1 Terra，均衡型，支持图像输入",
+      "gpt-6.1-sol": "GPT-6.1 Sol，复杂推理，成本较高",
+      "gpt-6-astra": "GPT-6 Astra，旗舰推理，成本最高"
+    },
+    note: "官方 OpenAI 兼容接口；GPT-6 系列会自动省略温度参数（该系列不接受 temperature）。"
   },
   {
     key: "deepseek",
@@ -1623,20 +1787,26 @@ const llmProviderPresets: LlmProviderPreset[] = [
     provider: "openai_compatible",
     baseUrl: "https://api.deepseek.com",
     aliases: ["https://api.deepseek.com/v1"],
-    models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+    models: ["deepseek-flash", "deepseek-v4-pro"],
     modelNotes: {
-      "deepseek-v4-flash": "推荐自动交易默认使用，成本低，并发 2500，直接信号建议超时 20 秒以上",
-      "deepseek-v4-pro": "更强模型，成本更高，并发 500"
+      "deepseek-flash": "V4.1 Flash（1017 检查点），官方当前 ID，成本低，推荐自动交易默认",
+      "deepseek-v4-pro": "V4 Pro，更强推理，成本更高"
     },
-    note: "DeepSeek 官方 OpenAI 格式接口，系统会自动启用 JSON Output，并在自动交易信号中关闭思考模式。",
-    pricingNote: "参考价格：Flash 输入未命中 1 元/百万 tokens、输出 2 元/百万 tokens；Pro 输入未命中 3 元/百万 tokens、输出 6 元/百万 tokens。"
+    note: "DeepSeek 官方接口，当前为 V4.1 Flash / V4 Pro；系统自动启用 JSON Output 并在信号请求中关闭思考模式。",
+    pricingNote: "价格以官方价目页为准，Flash 显著低于 Pro。"
   },
   {
     key: "qwen",
     label: "通义千问 Qwen",
     provider: "openai_compatible",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    models: ["qwen-plus", "qwen-max", "qwen-turbo"],
+    models: ["qwen3.8-flash", "qwen3.7-plus", "qwen3.8-max", "qwen-long"],
+    modelNotes: {
+      "qwen3.8-flash": "Qwen3.8 Flash，低延迟低成本，1M 上下文",
+      "qwen3.7-plus": "Qwen3.7 Plus，性价比均衡，1M 上下文",
+      "qwen3.8-max": "Qwen3.8 Max，最强推理",
+      "qwen-long": "超长上下文（10M），适合多周期历史"
+    },
     note: "阿里云百炼兼容模式"
   },
   {
@@ -1644,31 +1814,48 @@ const llmProviderPresets: LlmProviderPreset[] = [
     label: "Kimi / Moonshot",
     provider: "openai_compatible",
     baseUrl: "https://api.moonshot.cn/v1",
-    models: ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
-    note: "Moonshot OpenAI 兼容接口"
+    models: ["kimi-k3.1-pro", "kimi-k3.1-pro-highspeed", "kimi-k3"],
+    modelNotes: {
+      "kimi-k3.1-pro": "K3.1 Pro，当前旗舰，1M 上下文",
+      "kimi-k3.1-pro-highspeed": "旗舰高速版，约 2~3 倍速度，价格翻倍",
+      "kimi-k3": "K3，上一代旗舰，1M 上下文"
+    },
+    note: "Moonshot OpenAI 兼容接口；K2 系列已退役，请使用 K3 系列。"
   },
   {
     key: "openrouter",
     label: "OpenRouter",
     provider: "openai_compatible",
     baseUrl: "https://openrouter.ai/api/v1",
-    models: ["openai/gpt-4.1-mini", "anthropic/claude-3.5-sonnet", "google/gemini-2.5-flash"],
-    note: "多模型路由，模型名按 OpenRouter 后台为准"
+    models: ["openai/gpt-6-luna", "anthropic/claude-sonnet-5.5", "google/gemini-4-argon", "deepseek/deepseek-v4.1-flash"],
+    modelNotes: {
+      "openai/gpt-6-luna": "OpenAI GPT-6 Luna 经路由",
+      "anthropic/claude-sonnet-5.5": "Claude Sonnet 5.5 经路由",
+      "google/gemini-4-argon": "Gemini 4 Argon 经路由",
+      "deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash 经路由"
+    },
+    note: "多模型路由，模型名以 OpenRouter 后台为准"
   },
   {
     key: "siliconflow",
     label: "SiliconFlow",
     provider: "openai_compatible",
     baseUrl: "https://api.siliconflow.cn/v1",
-    models: ["Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-R1"],
-    note: "硅基流动 OpenAI 兼容接口"
+    models: ["deepseek-ai/DeepSeek-V4.1-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Qwen/Qwen3.8-27B", "zai-org/GLM-5.3"],
+    modelNotes: {
+      "deepseek-ai/DeepSeek-V4.1-Flash": "V4.1 Flash 1017（10 月升级，ID 未变）",
+      "deepseek-ai/DeepSeek-V4-Pro": "V4 Pro，更强推理",
+      "Qwen/Qwen3.8-27B": "Qwen3.8 开源 27B",
+      "zai-org/GLM-5.3": "GLM-5.3 通用模型"
+    },
+    note: "硅基流动 OpenAI 兼容接口，完整模型名以 /v1/models 返回为准"
   },
   {
     key: "ollama",
     label: "本地 Ollama",
     provider: "openai_compatible",
     baseUrl: "http://host.docker.internal:11434/v1",
-    models: ["qwen2.5:7b", "llama3.1:8b", "deepseek-r1:7b"],
+    models: ["qwen3:8b", "llama3.2:3b", "deepseek-r1:7b"],
     note: "Docker 后端访问本机 Ollama 使用 host.docker.internal"
   },
   {
@@ -1680,8 +1867,31 @@ const llmProviderPresets: LlmProviderPreset[] = [
     note: "手动填写 Base URL 和模型名称"
   }
 ];
-const defaultLlmSystemPrompt =
-  "你是一个谨慎的永续合约量化交易信号分析助手。只基于输入的结构化数据分析，不编造不存在的行情。你可以输出做多、做空或观望信号，但不能声称已经下单。系统会独立执行风控，自动执行仅限 OKX 模拟盘。你的输出必须是 JSON，不要输出 Markdown。";
+const defaultLlmSystemPrompt = [
+  "你是 OKX 永续合约的交易信号分析师，只依据输入的结构化数据判断，不编造行情或消息面。",
+  "",
+  "【分析框架】自上而下、按顺序综合判断，先环境后个币：",
+  "0) 市场环境：先看 market_context 的 bias（risk-on/mixed/risk-off）、BTC/ETH 24h 涨跌、全市场涨跌家数占比、各赛道强弱，判断当前是顺势、逆势还是震荡环境；",
+  "1) 趋势结构：MA5/MA20/MA60 的排列与价格所处位置，判定上升、下降或震荡；",
+  "2) 动量位置：changePct、近 20 根高低区间与当前价在区间中的相对位置；",
+  "3) 量价配合：volume20Avg 与近期量能是否支撑价格方向；",
+  "4) 情绪与一致性：sentiment 的资金费率与多空倾向，与 recent_signals 的判断是否自洽。",
+  "",
+  "【决策原则】",
+  "- 环境优先：大盘 risk-off 时对做多更谨慎、risk-on 时对做空更谨慎；个币信号与大盘方向冲突时降低置信度，并在 risks 写明冲突点。",
+  "- 赛道共振：个币所属赛道明显强于或弱于大盘时，可作为方向确认的加分或减分项。",
+  "- 风险优先：证据不足、多空矛盾或震荡无方向时输出 hold 并给低置信度，不为凑方向强行看多或看空。",
+  "- 已有同向持仓倾向 hold 避免重复加仓；持仓方向与判断相反时在 notes 明确提示。",
+  "- 置信度表示证据充分度而非预期收益：90 以上表示大盘与个币强共振且趋势明确；70-89 表示主要证据一致但有次要矛盾；50-69 表示分歧较大；低于 50 表示证据不足或互相矛盾。",
+  "",
+  "【输出纪律】",
+  "- 只输出一个 JSON 对象，不要 Markdown 或额外解释文字。",
+  "- action 只能是 long、short 或 hold。",
+  "- reasons 与 risks 每条一句话并引用具体数值（大盘涨跌、赛道强弱、均线、涨跌幅、价位），不要写空话。",
+  "- invalidation 必须是具体、可验证的失效条件（例如跌破 MA20 且收盘确认、价格回到某价位下方）。",
+  "- 若 market_context.available 为 false，说明本次缺少大盘数据，应更保守并降低置信度。",
+  "- 系统独立执行风控，仅在 OKX 模拟盘自动下单；你不直接下单，也不要声称已经下单。",
+].join("\n");
 const defaultLlmConfigForm: LlmConfigForm = {
   enabled: false,
   providerPreset: "openai",
@@ -1689,16 +1899,26 @@ const defaultLlmConfigForm: LlmConfigForm = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   clearApiKey: false,
-  model: "gpt-4.1-mini",
+  model: "gpt-6-luna",
   temperature: "0.2",
   maxTokens: "800",
   timeoutSeconds: String(DEFAULT_LLM_TIMEOUT_SECONDS),
-  mode: "direct_signal",
   systemPrompt: defaultLlmSystemPrompt
 };
+const MAX_AUTOMATION_INST_IDS = 10;
+const AUTOMATION_POPULAR_INST_IDS = [
+  "BTC-USDT-SWAP",
+  "ETH-USDT-SWAP",
+  "SOL-USDT-SWAP",
+  "BNB-USDT-SWAP",
+  "XRP-USDT-SWAP",
+  "DOGE-USDT-SWAP"
+];
 const defaultAutomationForm: AutomationStrategyForm = {
   name: "BTC LLM 5m 自动策略",
   instId: "BTC-USDT-SWAP",
+  instIds: ["BTC-USDT-SWAP"],
+  dailyPositionPct: "0",
   bar: "5m",
   template: "llm_direct",
   executionMode: "simulated_auto",
@@ -1707,7 +1927,6 @@ const defaultAutomationForm: AutomationStrategyForm = {
   sz: "1",
   fastWindow: "5",
   slowWindow: "20",
-  maxOrderContracts: "1",
   maxPositionContracts: "5",
   cooldownSeconds: "300",
   takeProfitPct: "0",
@@ -2195,6 +2414,40 @@ function formatSignedPercentRatio(value: number | null | undefined) {
   return `${percent > 0 ? "+" : ""}${percent.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}%`;
 }
 
+function orderPnlNumber(value?: string | null) {
+  if (value === undefined || value === null || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function formatOrderPnl(value?: string | null) {
+  const numeric = orderPnlNumber(value);
+  if (numeric === null) return "--";
+  return `${numeric > 0 ? "+" : ""}${numeric.toLocaleString("zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
+}
+
+function formatOrderPnlPct(value?: string | null) {
+  const numeric = orderPnlNumber(value);
+  if (numeric === null) return "";
+  return `${numeric > 0 ? "+" : ""}${numeric.toLocaleString("zh-CN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4
+  })}%`;
+}
+
+function orderPnlBasisLabel(basis?: string | null) {
+  if (basis === "okx-bills-settled") return "OKX 已结算（含手续费）";
+  if (basis === "okx-upl") return "实时持仓快照";
+  if (basis === "cached-upl") return "平仓前持仓快照";
+  if (basis === "signal-snapshot") return "信号留存快照";
+  if (basis === "position-snapshot") return "历史持仓快照";
+  if (basis === "estimated-price") return "价格估算";
+  return "";
+}
+
 function toNumber(value?: string | null) {
   if (value === undefined || value === null || value === "") return null;
   const numeric = Number(value);
@@ -2336,8 +2589,10 @@ function market24hActivity(ticker: Ticker | null | undefined, instId: string) {
 }
 
 function instrumentActivityLabel(ticker: Ticker | null | undefined, instId: string) {
-  const activity = market24hActivity(ticker, instId);
-  return `24h ${activity.value}${activity.unit ? ` ${activity.unit}` : ""}`;
+  const turnover = instrumentQuoteTurnover(ticker);
+  if (turnover === null || turnover <= 0) return "24h 成交额 --";
+  const { quote } = instrumentCurrencies(instId);
+  return `24h 额 ${formatCompact(turnover)}${quote ? ` ${quote}` : ""}`;
 }
 
 function instrumentAvatarText(instId: string) {
@@ -2349,8 +2604,35 @@ function instrumentAvatarText(instId: string) {
   return base.slice(0, 2);
 }
 
-function instrumentTickerVolume(ticker: Ticker | null | undefined) {
-  return toNumber(tickerValue(ticker, ["volCcyQuote24h", "volCcy24h", "vol24h"])) ?? -Infinity;
+// OKX 永续 ticker 没有 volCcyQuote24h：volCcy24h 是基础币数量、vol24h 是张数，
+// 单位随合约面值而变（SATS 的 6e13 个币只值几十万美元）。跨合约比较与排序前
+// 必须统一换算成计价币名义成交额，否则低价 meme 币会凭数字量级霸榜。
+function instrumentQuoteTurnover(
+  ticker: Ticker | null | undefined,
+  instrument?: Instrument
+): number | null {
+  const quoteValue = toNumber(ticker?.volCcyQuote24h);
+  if (quoteValue !== null && Number.isFinite(quoteValue) && quoteValue >= 0) return quoteValue;
+  const last = toNumber(ticker?.last);
+  const price = last !== null && Number.isFinite(last) && last > 0 ? last : null;
+  const baseValue = toNumber(ticker?.volCcy24h);
+  if (price !== null && baseValue !== null && Number.isFinite(baseValue) && baseValue >= 0) {
+    return baseValue * price;
+  }
+  const contractVolume = toNumber(ticker?.vol24h);
+  const contractValue = toNumber(instrument?.ct_val);
+  if (
+    price !== null &&
+    contractVolume !== null && Number.isFinite(contractVolume) && contractVolume >= 0 &&
+    contractValue !== null && Number.isFinite(contractValue) && contractValue > 0
+  ) {
+    return contractVolume * contractValue * price;
+  }
+  return null;
+}
+
+function relevanceRank(value: number | null | undefined) {
+  return value === null || value === undefined || !Number.isFinite(value) ? -Infinity : value;
 }
 
 function compareInstrumentRelevance(
@@ -2365,36 +2647,48 @@ function compareInstrumentRelevance(
   const selectedInstId = options.selectedInstId?.toUpperCase() ?? "";
   if (left.inst_id === selectedInstId) return -1;
   if (right.inst_id === selectedInstId) return 1;
-  if (Boolean(left.watched) !== Boolean(right.watched)) return left.watched ? -1 : 1;
+
+  // 用户显式选择「涨跌 / 成交量」时严格按该指标排，不再被关注状态或结算币种插队。
+  const explicitSort = options.sortMode !== "default";
+  if (!explicitSort && Boolean(left.watched) !== Boolean(right.watched)) {
+    return left.watched ? -1 : 1;
+  }
 
   const leftTicker = options.tickers[left.inst_id];
   const rightTicker = options.tickers[right.inst_id];
-  const leftChange = tickerTodayChange(leftTicker).percent ?? -Infinity;
-  const rightChange = tickerTodayChange(rightTicker).percent ?? -Infinity;
-  const leftVolume = instrumentTickerVolume(leftTicker);
-  const rightVolume = instrumentTickerVolume(rightTicker);
+  const leftChange = relevanceRank(tickerTodayChange(leftTicker).percent);
+  const rightChange = relevanceRank(tickerTodayChange(rightTicker).percent);
+  const leftTurnover = relevanceRank(instrumentQuoteTurnover(leftTicker, left));
+  const rightTurnover = relevanceRank(instrumentQuoteTurnover(rightTicker, right));
+
+  // 完全没有行情的合约统一沉底；用比较而非相减，避免 -Infinity - -Infinity 得到 NaN
+  // 让 Array.sort 把顺序判为「相等」而出现抖动。
+  const leftMissing = leftTurnover === -Infinity && leftChange === -Infinity;
+  const rightMissing = rightTurnover === -Infinity && rightChange === -Infinity;
+  if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
 
   if (options.sortMode === "change" && leftChange !== rightChange) {
-    return rightChange - leftChange;
+    return rightChange > leftChange ? 1 : -1;
   }
-  if (options.sortMode === "volume" && leftVolume !== rightVolume) {
-    return rightVolume - leftVolume;
-  }
-
-  const leftSettlement = instrumentSettlementKind(left, left.inst_id);
-  const rightSettlement = instrumentSettlementKind(right, right.inst_id);
-  if (leftSettlement !== rightSettlement) {
-    if (leftSettlement === "usdt") return -1;
-    if (rightSettlement === "usdt") return 1;
-    return leftSettlement.localeCompare(rightSettlement);
+  if (options.sortMode === "volume" && leftTurnover !== rightTurnover) {
+    return rightTurnover > leftTurnover ? 1 : -1;
   }
 
-  const leftLive = left.state === "live" ? 0 : 1;
-  const rightLive = right.state === "live" ? 0 : 1;
-  if (leftLive !== rightLive) return leftLive - rightLive;
+  if (!explicitSort) {
+    const leftSettlement = instrumentSettlementKind(left, left.inst_id);
+    const rightSettlement = instrumentSettlementKind(right, right.inst_id);
+    if (leftSettlement !== rightSettlement) {
+      if (leftSettlement === "usdt") return -1;
+      if (rightSettlement === "usdt") return 1;
+      return leftSettlement.localeCompare(rightSettlement);
+    }
+    const leftLive = left.state === "live" ? 0 : 1;
+    const rightLive = right.state === "live" ? 0 : 1;
+    if (leftLive !== rightLive) return leftLive - rightLive;
+  }
 
-  if (options.sortMode === "default" && leftVolume !== rightVolume) {
-    return rightVolume - leftVolume;
+  if (leftTurnover !== rightTurnover) {
+    return rightTurnover > leftTurnover ? 1 : -1;
   }
   return left.inst_id.localeCompare(right.inst_id);
 }
@@ -2561,6 +2855,7 @@ function sourceLabel(source?: string) {
   if (source === "llm-market-ai-outlook") return "AI分析";
   if (source === "market-ai-cache") return "AI缓存";
   if (source === "llm-market-analysis") return "LLM";
+  if (source === "llm-not-configured") return "未配置";
   if (source === "metric-fallback") return "指标降级";
   if (source === "partial-fallback") return "部分回退";
   if (source === "radar-analysis-cache") return "分析缓存";
@@ -4352,6 +4647,15 @@ function orderTypeLabel(ordType?: string) {
   return orderTypeOptions.find((item) => item.key === ordType)?.label ?? ordType ?? "--";
 }
 
+// 手动下单的幂等键：前缀 + 时间戳 + 随机串，符合 OKX clOrdId ≤32 位字母数字约束。
+// 同一次提交意图内复用（存于 ref），网络重试不会生成新键，避免重复成交。
+function makeClientOrderId(): string {
+  const prefix = "OKXQ";
+  const stamp = Date.now().toString(36).toUpperCase();
+  const entropy = Math.random().toString(36).slice(2, 10).toUpperCase();
+  return `${prefix}${stamp}${entropy}`.slice(0, 32);
+}
+
 function orderStateLabel(state?: string) {
   if (state === "live") return "挂单中";
   if (state === "partially_filled") return "部分成交";
@@ -4380,6 +4684,32 @@ function formatTime(value?: string | number | null) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return String(value);
   return new Date(numeric).toLocaleString("zh-CN", { hour12: false });
+}
+
+// 列表里的时间统一格式化为「时:分:秒」（补零），副行给日期提示。
+function formatClockSecond(value?: string | number | null) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "--";
+  const date = new Date(numeric);
+  if (!Number.isFinite(date.getTime())) return "--";
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+function formatDayHint(value?: string | number | null) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "";
+  const target = new Date(numeric);
+  if (!Number.isFinite(target.getTime())) return "";
+  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(new Date()) - startOfDay(target)) / 86400000);
+  if (dayDiff === 0) return "今天";
+  if (dayDiff === 1) return "昨天";
+  const month = String(target.getMonth() + 1).padStart(2, "0");
+  const day = String(target.getDate()).padStart(2, "0");
+  return `${month}-${day}`;
 }
 
 function formatDuration(ms?: number | null) {
@@ -4771,6 +5101,7 @@ function automationAlertStateLabel(alert: AutomationAlert) {
 }
 
 function automationGlobalStateLabel(status?: AutomationStatus | null) {
+  if (status?.globalStateAvailable === false) return "安全状态不可读 · 已停止交易";
   if (status?.globalPaused) return "全局暂停中";
   if (status?.circuitBreakerActive) return "已触发熔断";
   return "正常";
@@ -4888,11 +5219,6 @@ function llmModelSelectValue(model: string, models: string[]) {
   return models.includes(model) ? model : "__custom__";
 }
 
-function llmModelLabel(preset: LlmProviderPreset, model: string) {
-  const note = preset.modelNotes?.[model];
-  return note ? `${model} - ${note}` : model;
-}
-
 function llmModelNote(preset: LlmProviderPreset, model: string) {
   return preset.modelNotes?.[model] ?? "";
 }
@@ -4914,7 +5240,6 @@ function llmConfigToForm(config: LlmConfig): LlmConfigForm {
     temperature: String(config.temperature ?? 0.2),
     maxTokens: String(config.maxTokens ?? 800),
     timeoutSeconds: String(config.effectiveTimeoutSeconds ?? config.timeoutSeconds ?? DEFAULT_LLM_TIMEOUT_SECONDS),
-    mode: config.mode || "direct_signal",
     systemPrompt: config.systemPrompt || defaultLlmSystemPrompt
   };
 }
@@ -5115,6 +5440,8 @@ function readAppRouteFromHash(hash: string): AppRouteState {
               : "radar";
   } else if (parts[0] === "trade") {
     route.section = "trade";
+  } else if (parts[0] === "orders") {
+    route.section = "orders";
   } else if (parts[0] === "automation") {
     route.section = "automation";
     if (parts[1] === "strategies") {
@@ -5164,6 +5491,7 @@ function buildAppHash(route: AppRouteState) {
   let path = "/market/radar";
   if (route.section === "market") path = route.marketTab === "aiOutlook" ? "/market/ai-outlook" : route.marketTab === "aiRecords" ? "/market/ai-records" : route.marketTab === "usTimeline" ? "/market/us-timeline" : `/market/${route.marketTab}`;
   if (route.section === "trade") path = "/trade";
+  if (route.section === "orders") path = "/orders";
   if (route.section === "automation") {
     path = route.automationTab === "signalDetail" && route.signalDetailId
       ? `/automation/signals/${route.signalDetailId}`
@@ -5216,6 +5544,8 @@ function App() {
   const [settingsTab, setSettingsTab] = React.useState<SettingsTab>(initialRoute.settingsTab);
   const [signalDetailId, setSignalDetailId] = React.useState<number | null>(initialRoute.signalDetailId);
   const [strategyEditId, setStrategyEditId] = React.useState<number | null>(null);
+  // 从策略列表点「新建策略」时置为 true，概览页消费后打开空白表单。
+  const [strategyCreateIntent, setStrategyCreateIntent] = React.useState(false);
   const [selectedContract, setSelectedContract] = React.useState(initialRoute.selectedContract);
   const [selectedBar, setSelectedBar] = React.useState(initialRoute.selectedBar);
   const [timelineDate, setTimelineDate] = React.useState(initialRoute.timelineDate);
@@ -5307,7 +5637,15 @@ function App() {
   }, []);
 
   const openStrategyEditor = React.useCallback((strategyId: number) => {
+    setStrategyCreateIntent(false);
     setStrategyEditId(strategyId);
+    setSection("automation");
+    setAutomationTab("overview");
+  }, []);
+
+  const openStrategyCreator = React.useCallback(() => {
+    setStrategyEditId(null);
+    setStrategyCreateIntent(true);
     setSection("automation");
     setAutomationTab("overview");
   }, []);
@@ -5457,6 +5795,7 @@ function App() {
         <nav className="topNav" aria-label="主导航">
           <Button variant={section === "market" ? "filled" : "subtle"} className={section === "market" ? "active" : ""} aria-current={section === "market" ? "page" : undefined} leftSection={<ChartCandlestick size={16} />} onClick={() => openPrimarySection("market")}>市场</Button>
           <Button variant={section === "trade" ? "filled" : "subtle"} className={section === "trade" ? "active" : ""} aria-current={section === "trade" ? "page" : undefined} leftSection={<Send size={16} />} onClick={() => openPrimarySection("trade")}>交易</Button>
+          <Button variant={section === "orders" ? "filled" : "subtle"} className={section === "orders" ? "active" : ""} aria-current={section === "orders" ? "page" : undefined} leftSection={<Receipt size={16} />} onClick={() => openPrimarySection("orders")}>订单</Button>
           <Button variant={section === "automation" ? "filled" : "subtle"} className={section === "automation" ? "active" : ""} aria-current={section === "automation" ? "page" : undefined} leftSection={<Bot size={16} />} onClick={() => openPrimarySection("automation")}>自动化</Button>
           <Button variant={section === "account" ? "filled" : "subtle"} className={section === "account" ? "active" : ""} aria-current={section === "account" ? "page" : undefined} leftSection={<WalletCards size={16} />} onClick={() => openPrimarySection("account")}>账户</Button>
           <Button variant={section === "settings" ? "filled" : "subtle"} className={section === "settings" ? "active" : ""} aria-current={section === "settings" ? "page" : undefined} leftSection={<UserCog size={16} />} onClick={() => openPrimarySection("settings")}>设置</Button>
@@ -5501,11 +5840,15 @@ function App() {
       ) : section === "market" ? (
         <ContractRadarPage onOpenContract={openRadarContract} />
       ) : section === "trade" ? (
-        <TradingPage initialInstId={selectedContract} />
+        <TradingPage initialInstId={selectedContract} onOpenOrders={() => openPrimarySection("orders")} />
+      ) : section === "orders" ? (
+        <OrdersPage onOpenTrade={() => openPrimarySection("trade")} />
       ) : section === "automation" && automationTab === "overview" ? (
         <CleanAutomationPage
           initialInstId={selectedContract}
           initialEditStrategyId={strategyEditId}
+          initialCreate={strategyCreateIntent}
+          onCreateConsumed={() => setStrategyCreateIntent(false)}
           onEditConsumed={() => setStrategyEditId(null)}
           onOpenStrategies={() => setAutomationTab("strategies")}
           onOpenSignals={() => setAutomationTab("signals")}
@@ -5516,7 +5859,7 @@ function App() {
           onOpenSignalDetail={openSignalDetail}
         />
       ) : section === "automation" && automationTab === "strategies" ? (
-        <StrategyListPage onBackToAutomation={() => setAutomationTab("overview")} onEditStrategy={openStrategyEditor} />
+        <StrategyListPage onBackToAutomation={() => setAutomationTab("overview")} onEditStrategy={openStrategyEditor} onCreateStrategy={openStrategyCreator} />
       ) : section === "automation" && automationTab === "signals" ? (
         <SignalLogPage onOpenSignalDetail={openSignalDetail} />
       ) : section === "automation" ? (
@@ -5677,6 +6020,72 @@ function radarMarketRegimeLabel(value?: string) {
   return "待分析";
 }
 
+type RadarBiasView = { label: string; tone: "bull" | "bear" | "neutral" };
+
+function radarBiasView(value?: string): RadarBiasView {
+  if (value === "long") return { label: "偏多", tone: "bull" };
+  if (value === "short") return { label: "偏空", tone: "bear" };
+  return { label: "中性", tone: "neutral" };
+}
+
+function radarDirectionView(value?: string): RadarBiasView {
+  if (value === "long") return { label: "多", tone: "bull" };
+  if (value === "short") return { label: "空", tone: "bear" };
+  return { label: "中性", tone: "neutral" };
+}
+
+function formatUsdCompact(value?: string) {
+  const n = Number(value ?? "");
+  if (!isFinite(n) || n <= 0) return "--";
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return n.toFixed(0);
+}
+
+type RadarSentimentView = {
+  label: string;
+  tone: "bull" | "bear" | "neutral";
+  fundingText: string;
+  oiText: string;
+};
+
+function radarSentimentView(
+  sentiment?: {
+    funding?: { sampled?: number; positive?: number; negative?: number; neutral?: number; avgFundingRate?: string; avgFundingRatePct?: string };
+    openInterest?: { sampled?: number; maxOiUsd?: string; medianOiUsd?: string };
+  }
+): RadarSentimentView | null {
+  if (!sentiment) return null;
+  const funding = sentiment.funding || {};
+  const oi = sentiment.openInterest || {};
+  const sampled = Number(funding.sampled ?? 0);
+  if (!sampled) return null;
+  const positive = Number(funding.positive ?? 0);
+  const negative = Number(funding.negative ?? 0);
+  const neutral = Number(funding.neutral ?? 0);
+  const positiveRatio = positive / sampled;
+  const avgPct = funding.avgFundingRatePct;
+  let label: string;
+  let tone: RadarSentimentView["tone"];
+  if (positiveRatio >= 0.6) {
+    label = "多头偏强";
+    tone = "bull";
+  } else if (negative / sampled >= 0.6) {
+    label = "空头偏强";
+    tone = "bear";
+  } else {
+    label = "多空均衡";
+    tone = "neutral";
+  }
+  const fundingText = `多 ${positive} · 空 ${negative} · 平 ${neutral} ｜ 均值 ${avgPct ? `${avgPct}%` : "--"}`;
+  const oiSampled = Number(oi.sampled ?? 0);
+  const oiText = oiSampled
+    ? `最大 ${formatUsdCompact(oi.maxOiUsd)} ｜ 中位 ${formatUsdCompact(oi.medianOiUsd)}（样本 ${oiSampled}）`
+    : "暂无持仓数据";
+  return { label, tone, fundingText, oiText };
+}
+
 const US_TIMELINE_CATEGORIES = [
   ["", "全部"],
   ["monetary,inflation,employment,growth,consumption,trade", "财经事件"],
@@ -5707,7 +6116,92 @@ function timelineFocusWindow(date: string) {
   return { from: shiftTimelineDate(date, -6), to: shiftTimelineDate(date, 14) };
 }
 
+// 官方日历（BLS / BEA / Treasury）以英文标题入库，展示层统一转中文。
+// 英文原文仍保留在悬浮 title 与官方来源链接里，方便与官方日程核对。
+const US_EVENT_TITLE_ZH: Record<string, string> = {
+  "Consumer Price Index": "美国 CPI（消费者物价指数）",
+  "Producer Price Index": "美国 PPI（生产者物价指数）",
+  "Employment Situation": "美国就业情况报告",
+  "Job Openings and Labor Turnover": "JOLTS 职位空缺（美国）",
+  "Gross Domestic Product": "美国 GDP（国内生产总值）",
+  "Personal Income and Outlays": "美国个人收入与支出（PCE）",
+  "International Trade in Goods and Services": "美国国际贸易（商品与服务）",
+  "Initial Jobless Claims": "美国初请失业金人数",
+  "Nonfarm Payrolls": "美国非农就业人数",
+  "Retail Sales": "美国零售销售",
+  "ISM Manufacturing PMI": "美国 ISM 制造业 PMI",
+  "ISM Services PMI": "美国 ISM 服务业 PMI",
+  "Consumer Confidence": "美国消费者信心指数",
+  "Housing Starts": "美国新屋开工",
+  "Existing Home Sales": "美国成屋销售",
+  "Trade Balance": "美国贸易帐",
+  "FOMC Meeting Minutes": "FOMC 会议纪要"
+};
+
+const US_EVENT_PROVIDER_ZH: Record<string, string> = {
+  "Federal Reserve": "美联储",
+  BLS: "美国劳工统计局",
+  BEA: "美国经济分析局",
+  "U.S. Treasury": "美国财政部"
+};
+
+function usEventProviderLabel(provider?: string) {
+  const key = String(provider ?? "").trim();
+  if (!key) return "官方来源";
+  return US_EVENT_PROVIDER_ZH[key] ?? key;
+}
+
+function usEventDisplayTitle(event: Pick<UsMarketEvent, "title" | "provider">) {
+  const officialTitle = US_EVENT_TITLE_ZH[event.title];
+  if (officialTitle) return officialTitle;
+  if (event.provider !== "Federal Reserve") return event.title;
+  if (/会议与利率决议|政策声明与利率决定|利率决策/.test(event.title)) return "美联储利率决策（美国）";
+  if (/经济预测摘要|经济预测/.test(event.title)) return "FOMC 经济预测（美国）";
+  if (/新闻发布会/.test(event.title)) return "美联储新闻发布会（美国）";
+  return event.title;
+}
+
 const OVERVIEW_CONTRACTS = ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"] as const;
+const OVERVIEW_EVENT_PAST_DAYS = 7;
+const OVERVIEW_EVENT_FUTURE_DAYS = 31;
+
+function overviewEventRelativeTime(timestamp: number) {
+  const remaining = timestamp - Date.now();
+  if (remaining <= 0) return "已公布";
+  const days = Math.floor(remaining / 86_400_000);
+  if (days >= 1) return `${days} 天后`;
+  const hours = Math.floor(remaining / 3_600_000);
+  if (hours >= 1) return `${hours} 小时后`;
+  return "即将公布";
+}
+
+// 概览页的市场宽度直接复用 /api/tickers 全量快照：与合约列表、合约雷达同源，
+// 不额外引入接口。排除 OKX 返回的 TEST 占位合约与无法计算涨跌的行。
+function overviewMarketBreadth(tickers: Ticker[] | null | undefined) {
+  const rows: Array<{ instId: string; change: number; turnover: number | null }> = [];
+  for (const ticker of tickers ?? []) {
+    const instId = String(ticker?.instId ?? "").toUpperCase();
+    if (!instId.endsWith("-SWAP") || instId.startsWith("TEST")) continue;
+    const change = tickerRolling24hChange(ticker).percent;
+    if (change === null || !Number.isFinite(change)) continue;
+    rows.push({ instId, change, turnover: instrumentQuoteTurnover(ticker) });
+  }
+  const total = rows.length;
+  const up = rows.filter((row) => row.change > 0.0001).length;
+  const down = rows.filter((row) => row.change < -0.0001).length;
+  const flat = total - up - down;
+  const changes = rows.map((row) => row.change).sort((left, right) => left - right);
+  const medianChange = total ? changes[Math.floor(total / 2)] : null;
+  const averageChange = total ? changes.reduce((sum, value) => sum + value, 0) / total : null;
+  const hasTurnover = rows.some((row) => row.turnover !== null);
+  const turnoverUsd = hasTurnover ? rows.reduce((sum, row) => sum + (row.turnover ?? 0), 0) : null;
+  const ranked = [...rows].sort((left, right) => right.change - left.change);
+  const gainers = ranked.filter((row) => row.change > 0).slice(0, 3);
+  const losers = ranked.filter((row) => row.change < 0).slice(-3).reverse();
+  const upRatio = total ? up / total : 0;
+  const sentiment = !total ? "--" : upRatio >= 0.65 ? "普涨" : upRatio <= 0.35 ? "普跌" : "分化";
+  return { total, up, down, flat, upRatio, medianChange, averageChange, turnoverUsd, gainers, losers, sentiment };
+}
 
 function overviewShanghaiTime(timestamp?: number | null) {
   if (!timestamp || !Number.isFinite(timestamp)) return "时间待确认";
@@ -5721,16 +6215,124 @@ function overviewShanghaiTime(timestamp?: number | null) {
   });
 }
 
+// 成交额的多周期数值必须由真实日线累加得出。OKX 的 platform-24-volume 只提供
+// 滚动 24h 单点，没有历史序列，所以「周/月/年」绝不能用 24h × 天数推算。
+// 每个维度都取滚动的 N 个交易日，并与紧邻的上一等长窗口比较；窗口不足时明确
+// 返回 incomplete，不伪造数字。
+const VOLUME_PERIOD_CONFIG: Record<VolumePeriod, { label: string; days: number; bucketDays: number; buckets: number }> = {
+  day: { label: "日", days: 1, bucketDays: 1, buckets: 14 },
+  week: { label: "周", days: 7, bucketDays: 7, buckets: 12 },
+  month: { label: "月", days: 30, bucketDays: 30, buckets: 12 },
+  year: { label: "年", days: 365, bucketDays: 30, buckets: 12 }
+};
+
+function shortVolumeDate(value: string) {
+  return value ? value.slice(5).replace("-", "/") : "--";
+}
+
+function aggregateVolumePeriod(daily: VolumeHistoryPoint[] | null | undefined, period: VolumePeriod) {
+  const config = VOLUME_PERIOD_CONFIG[period];
+  const sorted = (daily ?? [])
+    .map((point) => ({ ...point, value: toNumber(point.volUsd) }))
+    .filter((point) => point.value !== null && Number.isFinite(point.value) && point.value >= 0)
+    .sort((left, right) => left.ts - right.ts || left.date.localeCompare(right.date)) as Array<VolumeHistoryPoint & { value: number }>;
+  // 当日 K 线尚未收盘时只有几小时的量，拿它跟完整交易日比会显示 -95% 之类的
+  // 假暴跌。把未收盘日排除在所有周期与环比之外，单独作为「今日至今」展示。
+  const unfinished = sorted.length && sorted[sorted.length - 1].confirm === "0" ? sorted[sorted.length - 1] : null;
+  const points = unfinished ? sorted.slice(0, -1) : sorted;
+  const sum = (rows: Array<{ value: number }>) => rows.reduce((total, row) => total + row.value, 0);
+  const currentRows = points.slice(-config.days);
+  const previousRows = points.slice(-config.days * 2, -config.days);
+  const current = currentRows.length ? sum(currentRows) : null;
+  const hasPrevious = previousRows.length === config.days;
+  const previous = hasPrevious ? sum(previousRows) : null;
+  const changePct = current !== null && previous !== null && previous > 0 ? ((current - previous) / previous) * 100 : null;
+  const currentStart = currentRows[0]?.date ?? "";
+  const currentEnd = currentRows[currentRows.length - 1]?.date ?? "";
+  const previousStart = hasPrevious ? previousRows[0]?.date ?? "" : "";
+  const previousEnd = hasPrevious ? previousRows[previousRows.length - 1]?.date ?? "" : "";
+  const rangeLabel = (start: string, end: string) => {
+    if (!start) return "";
+    if (start === end) return shortVolumeDate(start);
+    // 跨年窗口必须带年份，否则 11/14–11/13 看起来像倒序。
+    if (start.slice(0, 4) !== end.slice(0, 4)) return `${start.slice(0, 4)}/${shortVolumeDate(start)}–${end.slice(0, 4)}/${shortVolumeDate(end)}`;
+    return `${shortVolumeDate(start)}–${shortVolumeDate(end)}`;
+  };
+  const trendRows = points.slice(-config.bucketDays * config.buckets);
+  const trend: Array<{ label: string; value: number; isPrevious: boolean; startDate: string; endDate: string }> = [];
+  // 从末尾往前分桶，保证最后两桶与「本期 / 上一周期」边界完全对齐；
+  // 历史不足整桶时只让最靠前的一桶变短，不会错位。
+  for (let end = trendRows.length; end > 0; end -= config.bucketDays) {
+    const bucket = trendRows.slice(Math.max(0, end - config.bucketDays), end);
+    if (!bucket.length) continue;
+    const bucketStart = bucket[0].date;
+    const bucketEnd = bucket[bucket.length - 1].date;
+    const isPrevious = Boolean(previousStart) && bucketStart >= previousStart && bucketEnd <= previousEnd;
+    trend.unshift({ label: bucketEnd.slice(5), value: sum(bucket), isPrevious, startDate: bucketStart, endDate: bucketEnd });
+  }
+  return {
+    label: config.label,
+    days: config.days,
+    current,
+    previous,
+    changePct,
+    coveredDays: currentRows.length,
+    complete: currentRows.length === config.days,
+    hasPrevious,
+    currentRange: rangeLabel(currentStart, currentEnd),
+    previousRange: rangeLabel(previousStart, previousEnd),
+    startDate: currentStart,
+    endDate: currentEnd,
+    unfinishedToday: unfinished ? { date: unfinished.date, value: unfinished.value } : null,
+    totalDays: points.length,
+    trend
+  };
+}
+
 function MarketOverviewPage({ onOpenChart, onOpenEvents }: { onOpenChart: (instId: string) => void; onOpenEvents: () => void }) {
   const [volume, setVolume] = React.useState<PlatformVolumeResponse | null>(null);
+  const [volumeHistory, setVolumeHistory] = React.useState<VolumeHistoryResponse | null>(null);
+  const [volumePeriod, setVolumePeriod] = React.useState<VolumePeriod>("day");
   const [tickers, setTickers] = React.useState<TickersResponse | null>(null);
   const [events, setEvents] = React.useState<UsMarketEventsResponse | null>(null);
   const [volumeLoading, setVolumeLoading] = React.useState(true);
+  const [volumeHistoryLoading, setVolumeHistoryLoading] = React.useState(true);
   const [tickerLoading, setTickerLoading] = React.useState(true);
   const [eventsLoading, setEventsLoading] = React.useState(true);
   const [volumeError, setVolumeError] = React.useState("");
+  const [volumeHistoryError, setVolumeHistoryError] = React.useState("");
   const [tickerError, setTickerError] = React.useState("");
   const [eventsError, setEventsError] = React.useState("");
+
+  React.useEffect(() => {
+    let active = true;
+    let timer = 0;
+    let ready = false;
+    const load = async () => {
+      if (document.hidden) return;
+      setVolumeHistoryLoading(true);
+      try {
+        const response = await fetch(`${API_BASE}/api/market/overview/volume-history`);
+        if (!response.ok) throw new Error("成交额历史加载失败");
+        const payload = await response.json() as VolumeHistoryResponse;
+        ready = Boolean(payload.data?.daily?.length);
+        if (active) { setVolumeHistory(payload); setVolumeHistoryError(""); }
+      } catch {
+        if (active) setVolumeHistoryError("成交额历史读取失败，请稍后重试。");
+      } finally {
+        if (active) setVolumeHistoryLoading(false);
+      }
+    };
+    // 首次构建约需十余秒：历史未就绪时 5 秒轮询，拿到数据后按分钟刷新。
+    const tick = async () => {
+      if (!active) return;
+      await load();
+      if (!active) return;
+      timer = window.setTimeout(() => { void tick(); }, ready ? 60_000 : 5_000);
+    };
+    void tick();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, []);
 
   React.useEffect(() => {
     let active = true;
@@ -5781,11 +6383,31 @@ function MarketOverviewPage({ onOpenChart, onOpenEvents }: { onOpenChart: (instI
       setEventsLoading(true);
       try {
         const today = shanghaiDate(new Date());
-        const query = new URLSearchParams({ from: today, to: shiftTimelineDate(today, 14) });
-        const response = await fetch(`${API_BASE}/api/market/us-events?${query}`);
-        if (!response.ok) throw new Error("美国事件加载失败");
-        const payload = await response.json() as UsMarketEventsResponse;
-        if (active) { setEvents(payload); setEventsError(""); }
+        // 官方日历经常一次公布整月日程，只看未来两周会经常空窗。分两段读取
+        // （过去 7 天 + 未来 31 天，均在后端的 31 天窗口上限内），再按 id 去重。
+        const windows = [
+          { from: shiftTimelineDate(today, -OVERVIEW_EVENT_PAST_DAYS), to: today },
+          { from: today, to: shiftTimelineDate(today, OVERVIEW_EVENT_FUTURE_DAYS) }
+        ];
+        const payloads = await Promise.all(windows.map(async ({ from, to }) => {
+          const query = new URLSearchParams({ from, to });
+          const response = await fetch(`${API_BASE}/api/market/us-events?${query}`);
+          if (!response.ok) throw new Error("美国事件加载失败");
+          return await response.json() as UsMarketEventsResponse;
+        }));
+        if (!active) return;
+        const merged = new Map<string, UsMarketEvent>();
+        for (const payload of payloads) {
+          for (const event of payload.data ?? []) merged.set(event.id, event);
+        }
+        const primary = payloads[1];
+        setEvents({
+          ...primary,
+          data: [...merged.values()],
+          refreshing: payloads.some((payload) => payload.refreshing),
+          warnings: [...new Set(payloads.flatMap((payload) => payload.warnings ?? []))]
+        });
+        setEventsError("");
       } catch {
         if (active) setEventsError("美国事件读取失败，请稍后重试。已显示上次可用日历（如有）。");
       } finally {
@@ -5798,41 +6420,125 @@ function MarketOverviewPage({ onOpenChart, onOpenEvents }: { onOpenChart: (instI
   }, []);
 
   const featured = OVERVIEW_CONTRACTS.map((instId) => ({ instId, ticker: tickers?.data?.find((item) => item.instId === instId) })).filter((item) => item.ticker);
-  const upcoming = (events?.data ?? []).filter((event) => event.scheduledAt && event.scheduledAt >= Date.now() && event.state !== "cancelled").sort((left, right) => (left.scheduledAt ?? 0) - (right.scheduledAt ?? 0)).slice(0, 4);
+  const breadth = React.useMemo(() => overviewMarketBreadth(tickers?.data), [tickers]);
+  const now = Date.now();
+  const calendarEvents = (events?.data ?? [])
+    .filter((event) => event.state !== "cancelled" && typeof event.scheduledAt === "number" && Number.isFinite(event.scheduledAt))
+    .sort((left, right) => (left.scheduledAt ?? 0) - (right.scheduledAt ?? 0));
+  const futureEvents = calendarEvents.filter((event) => (event.scheduledAt ?? 0) >= now).slice(0, 4);
+  const pastCount = Math.max(0, 4 - futureEvents.length);
+  const pastEvents = pastCount
+    ? calendarEvents.filter((event) => (event.scheduledAt ?? 0) < now).slice(-pastCount).reverse()
+    : [];
+  const overviewEvents = [
+    ...futureEvents.map((event) => ({ event, upcoming: true })),
+    ...pastEvents.map((event) => ({ event, upcoming: false }))
+  ];
+  const eventProviders = events?.providerStatuses ?? [];
+  const healthyProviders = eventProviders.filter((provider) => provider.status === "fresh").length;
   const volumeAge = volume?.ts ? Date.now() - volume.ts : Infinity;
   const visibleVolume = volume?.data && volumeAge <= 15 * 60_000 ? volume.data : null;
   const volumeCached = Boolean(visibleVolume && (volume?.state !== "fresh" || volumeError));
-  const tickerCached = Boolean(tickers?.data?.length && (tickerError || (tickers.refresh?.state && tickers.refresh.state !== "fresh")));
-  const eventsCached = Boolean(events?.data?.length && (eventsError || events.providerStatuses?.some((item) => item.status !== "fresh")));
+  const platformVolUsd = toNumber(visibleVolume?.volUsd);
+  const contractShare = platformVolUsd && platformVolUsd > 0 && breadth.turnoverUsd !== null
+    ? (breadth.turnoverUsd / platformVolUsd) * 100
+    : null;
+  const volumeStats = React.useMemo(
+    () => aggregateVolumePeriod(volumeHistory?.data?.daily, volumePeriod),
+    [volumeHistory?.data?.daily, volumePeriod]
+  );
+  const volumeTrendMax = Math.max(...volumeStats.trend.map((point) => point.value), 1);
+  const tickerRefresh = tickers?.refresh;
+  // 后台正常刷新（failureCount=0、快照很新）不是故障，不应常驻橙色告警。
+  const tickerStale = Boolean(tickers?.data?.length && (
+    tickerError ||
+    (tickerRefresh?.failureCount ?? 0) > 0 ||
+    ["stale", "backing_off", "unavailable"].includes(tickerRefresh?.state ?? "") ||
+    (tickerRefresh?.cacheAgeMs ?? 0) > 120_000
+  ));
 
   return <section className="marketMain marketOverviewPage" aria-label="市场概况">
     <header className="marketOverviewHeader">
-      <div><h1>市场概况</h1><p>OKX 平台成交额、代表合约行情与近期美国事件。各项数据范围分别标注。</p></div>
+      <div><h1>市场概况</h1><p>OKX 平台成交额、代表合约行情、全市场宽度与近期美国事件。各项数据范围分别标注。</p></div>
     </header>
     <div className="marketOverviewGrid">
-      <Paper component="section" className="marketOverviewPanel marketOverviewVolume" withBorder shadow="none" aria-label="OKX 平台成交额" aria-busy={volumeLoading}>
-        <div className="marketOverviewPanelHeader"><div><h2>OKX 平台 24 小时成交额（USD）</h2><p>订单簿交易 · 滚动 24 小时</p></div>{volumeLoading && visibleVolume ? <span className="marketOverviewUpdating" role="status">更新中</span> : null}</div>
-        {!visibleVolume && volumeLoading ? <DataLoadingSkeleton label="正在读取 OKX 平台成交额" variant="metrics" /> : visibleVolume ? <><strong className="marketOverviewBigNumber">{formatCompact(visibleVolume.volUsd)} <small>USD</small></strong><p className="marketOverviewSource">来源：OKX 平台总量接口 · 更新于 {overviewShanghaiTime(visibleVolume.ts)}（上海时间）{volumeCached ? " · 已显示缓存" : " · 已更新"}</p>{volumeCached ? <Notice>平台成交额暂时使用最近快照。</Notice> : null}</> : <EmptyState compact>平台成交额暂不可用，请稍后刷新页面。</EmptyState>}
+      <Paper component="section" className="marketOverviewPanel marketOverviewVolume" withBorder shadow="none" aria-label="OKX 成交额" aria-busy={volumeLoading || volumeHistoryLoading}>
+        <div className="marketOverviewPanelHeader marketOverviewVolumeHeader">
+          <div><h2>OKX 成交额（USD）</h2><p>主流永续合约 · 真实日线累加</p></div>
+          <SegmentedControl aria-label="成交额统计周期" value={volumePeriod} onChange={(value) => setVolumePeriod(value as VolumePeriod)} data={[{ value: "day", label: "日" }, { value: "week", label: "周" }, { value: "month", label: "月" }, { value: "year", label: "年" }]} size="xs" />
+        </div>
+        {!volumeHistory?.data && volumeHistoryLoading ? <DataLoadingSkeleton label="正在累计 OKX 日线成交额" variant="metrics" /> : volumeStats.current !== null ? <>
+          <strong className="marketOverviewBigNumber">{formatCompact(volumeStats.current)} <small>USD</small></strong>
+          <div className="marketOverviewVolumeMeta">
+            <span>{volumeStats.label}维度 · 近 {volumeStats.coveredDays} 个交易日累计</span>
+            {volumeStats.changePct !== null ? <span className={changeClass(volumeStats.changePct)}>较上一周期（{volumeStats.previousRange}）{formatSignedPercent(volumeStats.changePct)}</span> : <span>上期数据不足，暂不计算环比</span>}
+          </div>
+          <div className="marketOverviewVolumeTrend" role="img" aria-label={`${volumeStats.label}维度成交额趋势，上一周期已高亮`}>
+            {volumeStats.trend.map((point) => <span key={point.startDate} className={point.isPrevious ? "marketOverviewVolumeTrendPrevious" : undefined} title={`${point.startDate} ~ ${point.endDate}${point.isPrevious ? " · 上一周期" : ""} · ${formatCompact(point.value)} USD`} style={{ height: `${Math.max(4, (point.value / volumeTrendMax) * 100)}%` }} />)}
+          </div>
+          {volumeStats.hasPrevious ? <div className="marketOverviewVolumeLegend">
+            <span><i className="marketOverviewLegendPrevious" />上一周期 {volumeStats.previousRange} · {formatCompact(volumeStats.previous ?? 0)} USD</span>
+            <span><i className="marketOverviewLegendCurrent" />本期 {volumeStats.currentRange} · {formatCompact(volumeStats.current ?? 0)} USD</span>
+          </div> : null}
+          <p className="marketOverviewTrendCaption">按已收盘交易日统计 · {volumeStats.startDate} ~ {volumeStats.endDate}{!volumeStats.complete ? ` · 数据仅覆盖 ${volumeStats.coveredDays}/${volumeStats.days} 天，为部分周期累计` : ""}</p>
+          {volumeStats.unfinishedToday ? <p className="marketOverviewTrendCaption">今日至今 {formatCompact(volumeStats.unfinishedToday.value)} USD（{volumeStats.unfinishedToday.date} 未收盘，未计入上述周期与环比）</p> : null}
+        </> : <EmptyState compact>{volumeHistoryError || "成交额历史序列暂不可用，正在后台构建。"}</EmptyState>}
+        {!volumeStats.complete && volumeStats.current !== null ? <Notice>所选周期的历史日线不足，当前数值为已覆盖交易日的真实累计，未做任何外推补齐。</Notice> : null}
+        {volumeHistoryError && volumeStats.current !== null ? <Notice tone="warning">{volumeHistoryError}</Notice> : null}
+        {visibleVolume ? <div className="marketOverviewVolumeComparison">
+          <span><strong>{formatCompact(visibleVolume.volUsd)} USD</strong><small>官方 24h 全平台成交额{volumeCached ? " · 缓存" : ""}</small></span>
+          <span><strong>{breadth.turnoverUsd === null ? "--" : `${formatCompact(breadth.turnoverUsd)} USD`}</strong><small>永续合约 24h 成交额（估算）{contractShare === null ? "" : ` · 占平台 ${contractShare.toFixed(1)}%`}</small></span>
+        </div> : null}
         {volumeError && visibleVolume ? <Notice>{volumeError}</Notice> : null}
-        <p className="marketOverviewScope">此数值仅代表 OKX 平台，不代表全加密市场成交额或市值。</p>
+        {!visibleVolume && !volumeLoading ? <Notice tone="warning">官方 24h 全平台成交额暂不可用，上方多周期数值不受影响。</Notice> : null}
+        <p className="marketOverviewSource">来源：OKX 1D 日线成交额（volumeQuote）累加{volumeHistory?.data ? ` · ${volumeHistory.data.instrumentCount} 个 USDT 本位永续合约，覆盖约 ${volumeHistory.data.coveragePct}% 合约成交额 · ${volumeHistory.data.startDate} 起` : ""}{volumeHistory?.state === "cached" ? " · 已显示缓存" : ""}</p>
+        <p className="marketOverviewScope">此口径仅覆盖所选永续合约，不含现货与期权，与官方全平台 24h 总额不同，不代表全加密市场成交额。</p>
       </Paper>
 
       <Paper component="section" className="marketOverviewPanel marketOverviewEvents" withBorder shadow="none" aria-label="近期美国事件" aria-busy={eventsLoading}>
-        <div className="marketOverviewPanelHeader"><div><h2>近期美国事件</h2><p>近期日程 · 上海时间</p></div><Button type="button" size="xs" variant="subtle" onClick={onOpenEvents}>完整日历</Button></div>
-        {!events && eventsLoading ? <DataLoadingSkeleton label="正在读取美国事件" /> : upcoming.length ? <div className="marketOverviewEventList">{upcoming.map((event) => <div className="marketOverviewEvent" key={event.id}><time>{overviewShanghaiTime(event.scheduledAt)}</time><strong title={event.title}>{event.title}</strong><span>{event.provider}</span></div>)}</div> : <EmptyState compact>{eventsError ? "美国事件暂不可用。" : events?.refreshing ? "官方事件正在同步。" : "未来两周暂无可显示的美国事件。"}</EmptyState>}
-        {eventsCached ? <Notice>部分事件来源正在更新，已显示可用日历。</Notice> : null}
+        <div className="marketOverviewPanelHeader"><div><h2>近期美国事件</h2><p>过去 7 天与未来 31 天 · 上海时间</p></div><Button type="button" size="xs" variant="subtle" onClick={onOpenEvents}>完整日历</Button></div>
+        {!events && eventsLoading ? <DataLoadingSkeleton label="正在读取美国事件" /> : overviewEvents.length ? <div className="marketOverviewEventList">{overviewEvents.map(({ event, upcoming }) => <div className={`marketOverviewEvent${upcoming ? "" : " isPast"}`} key={event.id}><time>{overviewShanghaiTime(event.scheduledAt)}</time><strong title={`官方名称：${event.title}`}>{usEventDisplayTitle(event)}</strong><span>{usEventProviderLabel(event.provider)} · {upcoming ? overviewEventRelativeTime(event.scheduledAt ?? 0) : "已公布"}</span></div>)}</div> : <EmptyState compact>{eventsError ? "美国事件暂不可用。" : events?.refreshing ? "官方日历正在后台同步，完成后自动显示。" : "近期暂无已公布的官方事件。"}</EmptyState>}
         {eventsError ? <Notice tone={events?.data?.length ? "warning" : "danger"}>{eventsError}</Notice> : null}
         {eventsLoading && events ? <span className="marketOverviewUpdating" role="status">日历更新中</span> : null}
-        <p className="marketOverviewSource">来源：美国官方事件日历{events?.cacheAgeMs ? ` · 缓存约 ${formatDuration(events.cacheAgeMs)}` : ""}</p>
+        <p className="marketOverviewSource">来源：美国官方事件日历{eventProviders.length ? ` · ${healthyProviders}/${eventProviders.length} 个来源正常` : ""}{events?.cacheAgeMs ? ` · 缓存约 ${formatDuration(events.cacheAgeMs)}` : ""}</p>
       </Paper>
 
       <Paper component="section" className="marketOverviewPanel marketOverviewTickers" withBorder shadow="none" aria-label="代表合约行情" aria-busy={tickerLoading}>
         <div className="marketOverviewPanelHeader"><div><h2>代表合约行情</h2><p>OKX USDT 永续合约 · 最近 24 小时</p></div>{tickerLoading && tickers?.data?.length ? <span className="marketOverviewUpdating" role="status">更新中</span> : null}</div>
-        {!tickers && tickerLoading ? <DataLoadingSkeleton label="正在读取代表合约行情" variant="metrics" /> : featured.length ? <div className="marketOverviewTickerList">{featured.map(({ instId, ticker }) => { const change = tickerRolling24hChange(ticker).percent; const activity = market24hActivity(ticker, instId); return <UnstyledButton key={instId} type="button" className="marketOverviewTicker" onClick={() => onOpenChart(instId)} aria-label={`查看 ${instId} 行情图表`}><span><strong>{instId.split("-")[0]}</strong><small>{instId}</small></span><span><strong>{formatMarketNumber(ticker?.last)} USDT</strong><small>最新价</small></span><span className={changeClass(change)}><strong>{formatSignedPercent(change)}</strong><small>24h 涨跌</small></span><span><strong>{activity.value}</strong><small>{activity.label}</small></span></UnstyledButton>; })}</div> : <EmptyState compact>{tickers?.refresh?.state === "initializing" ? "行情列表正在获取完整快照。" : "代表合约行情暂不可用。"}</EmptyState>}
+        {!tickers && tickerLoading ? <DataLoadingSkeleton label="正在读取代表合约行情" variant="metrics" /> : featured.length ? <div className="marketOverviewTickerList">{featured.map(({ instId, ticker }) => { const change = tickerRolling24hChange(ticker).percent; const turnover = instrumentQuoteTurnover(ticker); return <UnstyledButton key={instId} type="button" className="marketOverviewTicker" onClick={() => onOpenChart(instId)} aria-label={`查看 ${instId} 行情图表`} title={`${instId} · 24h 高 ${formatMarketNumber(ticker?.high24h)} / 低 ${formatMarketNumber(ticker?.low24h)} · 成交额按最新价折算`}><span><strong>{instId.split("-")[0]}</strong><small>{instId}</small></span><span><strong>{formatMarketNumber(ticker?.last)} USDT</strong><small>最新价</small></span><span className={changeClass(change)}><strong>{formatSignedPercent(change)}</strong><small>24h 涨跌</small></span><span><strong>{turnover === null ? "--" : formatCompact(turnover)} USDT</strong><small>24h 成交额（估算）</small></span></UnstyledButton>; })}</div> : <EmptyState compact>{tickers?.refresh?.state === "initializing" ? "行情列表正在获取完整快照。" : "代表合约行情暂不可用。"}</EmptyState>}
         {featured.length > 0 && featured.length < OVERVIEW_CONTRACTS.length ? <Notice>部分代表合约暂无行情。</Notice> : null}
-        {tickerCached ? <Notice>合约行情暂时使用最近快照。</Notice> : null}
+        {tickerStale ? <Notice>合约行情暂时使用最近快照。</Notice> : null}
         {tickerError ? <Notice tone={featured.length ? "warning" : "danger"}>{tickerError}</Notice> : null}
         <p className="marketOverviewSource">来源：OKX 永续合约 ticker · 更新于 {overviewShanghaiTime(tickers?.ts)}（上海时间）</p>
+      </Paper>
+
+      <Paper component="section" className="marketOverviewPanel marketOverviewBreadth" withBorder shadow="none" aria-label="市场宽度" aria-busy={tickerLoading}>
+        <div className="marketOverviewPanelHeader">
+          <div><h2>市场宽度</h2><p>OKX 永续合约 · 全量 {breadth.total} 个</p></div>
+          {breadth.total ? <span className={`marketOverviewSentiment${breadth.sentiment === "普涨" ? " isUp" : breadth.sentiment === "普跌" ? " isDown" : ""}`}>{breadth.sentiment}</span> : null}
+        </div>
+        {!tickers && tickerLoading ? <DataLoadingSkeleton label="正在统计全市场涨跌" variant="metrics" /> : breadth.total ? <>
+          <div className="marketOverviewBreadthCounts">
+            <span className="up"><strong>{breadth.up}</strong><small>上涨</small></span>
+            <span className="down"><strong>{breadth.down}</strong><small>下跌</small></span>
+            <span><strong>{breadth.flat}</strong><small>平盘</small></span>
+          </div>
+          <div className="marketOverviewBreadthBar" role="img" aria-label={`上涨 ${breadth.up} 个，下跌 ${breadth.down} 个，平盘 ${breadth.flat} 个`}>
+            <span className="up" style={{ width: `${(breadth.up / breadth.total) * 100}%` }} />
+            <span className="down" style={{ width: `${(breadth.down / breadth.total) * 100}%` }} />
+            <span className="flat" style={{ width: `${(breadth.flat / breadth.total) * 100}%` }} />
+          </div>
+          <div className="marketOverviewBreadthMetrics">
+            <span><strong>{formatSignedPercent(breadth.medianChange)}</strong><small>涨跌幅中位数</small></span>
+            <span><strong>{formatSignedPercent(breadth.averageChange)}</strong><small>平均涨跌幅</small></span>
+            <span><strong>{breadth.turnoverUsd === null ? "--" : formatCompact(breadth.turnoverUsd)} USD</strong><small>24h 成交额（估算）</small></span>
+          </div>
+          <div className="marketOverviewBreadthLeaders">
+            <div><h3>领涨</h3>{breadth.gainers.length ? breadth.gainers.map((item) => <UnstyledButton key={item.instId} type="button" className="marketOverviewLeader" onClick={() => onOpenChart(item.instId)} aria-label={`查看 ${item.instId} 行情图表`}><span>{item.instId.split("-")[0]}</span><strong className={changeClass(item.change)}>{formatSignedPercent(item.change)}</strong></UnstyledButton>) : <p>暂无上涨合约</p>}</div>
+            <div><h3>领跌</h3>{breadth.losers.length ? breadth.losers.map((item) => <UnstyledButton key={item.instId} type="button" className="marketOverviewLeader" onClick={() => onOpenChart(item.instId)} aria-label={`查看 ${item.instId} 行情图表`}><span>{item.instId.split("-")[0]}</span><strong className={changeClass(item.change)}>{formatSignedPercent(item.change)}</strong></UnstyledButton>) : <p>暂无下跌合约</p>}</div>
+          </div>
+        </> : <EmptyState compact>市场宽度暂不可用。</EmptyState>}
+        <p className="marketOverviewSource">来源：OKX 永续合约 ticker · 按 24h 开盘价计算涨跌 · 成交额按最新价折算</p>
       </Paper>
     </div>
   </section>;
@@ -5865,23 +6571,6 @@ function UsMarketTimelinePage({ date, onDateChange }: { date: string; onDateChan
   const label = (event: UsMarketEvent) => event.state === "released" ? "已公布" : event.state === "revised" ? "已修正" : event.state === "cancelled" ? "已取消" : isHistoricalUnverified(event) ? "历史值待核验" : "预告";
   const eventDay = (event: UsMarketEvent) => event.scheduledAt ? shanghaiDate(new Date(event.scheduledAt)) : "";
   const eventTime = (event: UsMarketEvent) => !event.timeKnown || !event.scheduledAt ? "待确认" : new Date(event.scheduledAt).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit" });
-  const displayTitle = (event: UsMarketEvent) => {
-    const officialTitle = {
-      "Consumer Price Index": "美国 CPI（消费者物价指数）",
-      "Producer Price Index": "美国 PPI（生产者物价指数）",
-      "Employment Situation": "美国就业情况报告",
-      "Job Openings and Labor Turnover": "JOLTS 职位空缺（美国）",
-      "Gross Domestic Product": "美国 GDP（国内生产总值）",
-      "Personal Income and Outlays": "美国个人收入与支出（PCE）",
-      "International Trade in Goods and Services": "美国国际贸易（商品与服务）",
-    }[event.title];
-    if (officialTitle) return officialTitle;
-    if (event.provider !== "Federal Reserve") return event.title;
-    if (/会议与利率决议|政策声明与利率决定|利率决策/.test(event.title)) return "美联储利率决策（美国）";
-    if (/经济预测摘要|经济预测/.test(event.title)) return "FOMC 经济预测（美国）";
-    if (/新闻发布会/.test(event.title)) return "美联储新闻发布会（美国）";
-    return event.title;
-  };
   const isPolicyDecision = (event: UsMarketEvent) => event.provider === "Federal Reserve" && /会议与利率决议|政策声明与利率决定|利率决策/.test(event.title);
   const isPolicyBundleDuplicate = (event: UsMarketEvent) => isPolicyDecision(event) || (event.provider === "Federal Reserve" && event.title === "FOMC 会议（美国）");
   const groupedEvents = React.useMemo(() => {
@@ -5930,9 +6619,9 @@ function UsMarketTimelinePage({ date, onDateChange }: { date: string; onDateChan
       </Popover>
     </div>
     {error ? <Notice tone="danger">{error}</Notice> : null}
-    {loading && !events.length ? <DataLoadingSkeleton label="正在读取已保存日历" /> : groupedEvents.length ? <div className="usTimelineList">{groupedEvents.map(([day, dayEvents]) => <section className={`usTimelineDay ${day === date ? "focused" : ""}`} key={day}><h2 className="usTimelineDateTitle">{day.replace(/-/g, "/")}</h2>{dayEvents.map((event) => { const primary = isPolicyDecision(event); const figures = primary ? policyFacts(event) : figuresFor(event); const historicalUnverified = isHistoricalUnverified(event); return <article className={`usEventCard ${primary ? "primary" : "compact"}`} key={event.id}><time>{eventTime(event)}{event.timeKnown ? <small>上海时间</small> : null}</time><div><div className="usEventTitle"><strong>{displayTitle(event)}</strong><span className={`usEventState ${event.state} ${historicalUnverified ? "historical" : ""}`}>{label(event)}</span><a className="usEventSource" href={event.sourceUrl} target="_blank" rel="noreferrer" aria-label={`${displayTitle(event)} 的官方来源，${event.sourceTimezone || "America/New_York"}`} title={`官方来源 · ${event.sourceTimezone || "America/New_York"}`}><ExternalLink size={14} /></a></div>{primary ? <div className="usEventValues policyFacts">{figures.map(([name, value]) => <span key={name}>{name}<b>{value}</b></span>)}</div> : figures.length ? <div className={`usEventValues count-${figures.length}`}>{figures.map(([name, value]) => <span key={name}>{name}<b>{value}</b></span>)}</div> : historicalUnverified ? <p className="usEventHistoricalPending">该历史日程尚无可核验的官方数值，保留日程与来源，不填充猜测数据。</p> : null}{(event.period_label || event.unit || event.revision) && <p className="usEventContext">{[event.period_label, event.unit, event.revision ? `修订：${event.revision}` : ""].filter(Boolean).join(" · ")}</p>}</div></article>; })}</section>)}</div> : <EmptyState>{refreshing ? "正在同步该日期窗口的官方日历…" : "所选日期附近暂无符合筛选条件的官方事件。"}</EmptyState>}
+    {loading && !events.length ? <DataLoadingSkeleton label="正在读取已保存日历" /> : groupedEvents.length ? <div className="usTimelineList">{groupedEvents.map(([day, dayEvents]) => <section className={`usTimelineDay ${day === date ? "focused" : ""}`} key={day}><h2 className="usTimelineDateTitle">{day.replace(/-/g, "/")}</h2>{dayEvents.map((event) => { const primary = isPolicyDecision(event); const figures = primary ? policyFacts(event) : figuresFor(event); const historicalUnverified = isHistoricalUnverified(event); return <article className={`usEventCard ${primary ? "primary" : "compact"}`} key={event.id}><time>{eventTime(event)}{event.timeKnown ? <small>上海时间</small> : null}</time><div><div className="usEventTitle"><strong>{usEventDisplayTitle(event)}</strong><span className={`usEventState ${event.state} ${historicalUnverified ? "historical" : ""}`}>{label(event)}</span><a className="usEventSource" href={event.sourceUrl} target="_blank" rel="noreferrer" aria-label={`${usEventDisplayTitle(event)} 的官方来源，${event.sourceTimezone || "America/New_York"}`} title={`官方来源 · ${event.sourceTimezone || "America/New_York"}`}><ExternalLink size={14} /></a></div>{primary ? <div className="usEventValues policyFacts">{figures.map(([name, value]) => <span key={name}>{name}<b>{value}</b></span>)}</div> : figures.length ? <div className={`usEventValues count-${figures.length}`}>{figures.map(([name, value]) => <span key={name}>{name}<b>{value}</b></span>)}</div> : historicalUnverified ? <p className="usEventHistoricalPending">该历史日程尚无可核验的官方数值，保留日程与来源，不填充猜测数据。</p> : null}{(event.period_label || event.unit || event.revision) && <p className="usEventContext">{[event.period_label, event.unit, event.revision ? `修订：${event.revision}` : ""].filter(Boolean).join(" · ")}</p>}</div></article>; })}</section>)}</div> : <EmptyState>{refreshing ? "正在同步该日期窗口的官方日历…" : "所选日期附近暂无符合筛选条件的官方事件。"}</EmptyState>}
     {refreshing && groupedEvents.length ? <DataLoadingState label="已显示缓存，官方日历正在后台更新" compact /> : null}
-    {attentionProviders ? <Disclosure className="usTimelineSourceWarning" label={<><AlertTriangle size={14} />数据状态</>}><span>{unavailableProviders.map((item) => item.provider).join("、")} 暂时使用已保存日历或不可用；已显示可读取的官方事件。</span></Disclosure> : providerStatuses.length ? null : warnings.map((warning) => <Notice key={warning} tone="warning">{warning}</Notice>)}
+    {attentionProviders ? <Disclosure className="usTimelineSourceWarning" label={<><AlertTriangle size={14} />数据状态</>}><span>{unavailableProviders.map((item) => usEventProviderLabel(item.provider)).join("、")} 暂时使用已保存日历或不可用；已显示可读取的官方事件。</span></Disclosure> : providerStatuses.length ? null : warnings.map((warning) => <Notice key={warning} tone="warning">{warning}</Notice>)}
   </section>;
 }
 
@@ -6363,10 +7052,15 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
       String(appliedFilters.risk || "") !== risk
     )
   );
+  const analysisSource = analysis?.originSource || analysis?.source || "";
+  const analysisNotConfigured = analysis?.status === "not-configured" || analysisSource === "llm-not-configured";
+  const analysisFromLlm = analysisSource === "llm-market-analysis";
+  const analysisTitle = analysisFromLlm ? "全市场 AI 观察" : "全市场指标分析 · 规则降级";
+  const setupGuide = analysis?.setupGuide;
   const warning = error || radarWarningText(payload?.warning) || "";
   const updatedLabel = payload?.ts ? new Date(payload.ts).toLocaleTimeString("zh-CN") : "--";
   const scanButtonLabel = loading ? "扫描中" : payload ? "重新扫描" : "开始扫描";
-  const analysisButtonLabel = analysisLoading ? "分析中" : analysis ? "刷新 AI" : "AI 分析";
+  const analysisButtonLabel = analysisLoading ? "分析中" : analysisNotConfigured ? "重新检测" : analysis ? "刷新 AI" : "AI 分析";
   const radarStatusText = loading && !payload
     ? "正在扫描合约 · 正在筛选候选与 K线数据"
     : payload
@@ -6375,9 +7069,52 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
       : `${activeSortLabel} · ${sourceLabel(payload.source)} · ${summary ? `${summary.returned}/${summary.candidates}/${summary.total}` : "--"} · ${updatedLabel}${hasPendingScanFilters ? " · 筛选条件已变更，点击重新扫描后生效" : ""}`
     : "未扫描";
   const compactHighlights = analysis?.highlights.slice(0, 2) ?? [];
-  const compactWatchlist = analysis?.watchlist.slice(0, 3) ?? [];
+  const displayWatchlist = React.useMemo(() => {
+    type WatchItem = {
+      instId: string;
+      direction?: string;
+      entryZone?: string;
+      isSelected: boolean;
+      selectedNote: string;
+    };
+    const base: WatchItem[] = (analysis?.watchlist ?? []).slice(0, 3).map((item) => ({
+      instId: item.instId,
+      direction: item.direction,
+      entryZone: item.entryZone,
+      isSelected: false,
+      selectedNote: "",
+    }));
+    const currentId = (selectedResult?.instId ?? "").toUpperCase();
+    if (!currentId) return base;
+    const hit = base.find((item) => item.instId.toUpperCase() === currentId);
+    if (hit) {
+      // Already picked by the AI: move it to the top, keep AI direction/price.
+      return [
+        { ...hit, isSelected: true, selectedNote: "当前选中" },
+        ...base.filter((item) => item.instId.toUpperCase() !== currentId),
+      ];
+    }
+    // Not in the AI list: add a labelled row using only the existing rule baseline.
+    return [
+      {
+        instId: selectedResult?.instId ?? "",
+        direction: selectedResult?.direction,
+        entryZone: selectedResult?.entryZone || "",
+        isSelected: true,
+        selectedNote: "当前选中 · 指标参考",
+      },
+      ...base,
+    ];
+  }, [analysis?.watchlist, selectedResult]);
   const compactRisks = analysis ? [...analysis.riskWarnings, ...analysis.suggestedFilters].slice(0, 2) : [];
   const compactAnalysisWarning = analysis?.warnings?.[0] ?? "";
+  const sentimentView = radarSentimentView(analysis?.marketSummary?.sentiment);
+  const analysisBias = radarBiasView(analysis?.marketBias);
+  const fundingData = analysis?.marketSummary?.sentiment?.funding;
+  const fundingSampled = Number(fundingData?.sampled ?? 0);
+  const bullPct = fundingSampled ? Math.round((Number(fundingData?.positive ?? 0) / fundingSampled) * 100) : 0;
+  const bearPct = fundingSampled ? Math.round((Number(fundingData?.negative ?? 0) / fundingSampled) * 100) : 0;
+  const neuPct = Math.max(0, 100 - bullPct - bearPct);
 
   return (
     <section className="radarPage radarPageCompact">
@@ -6389,7 +7126,8 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
         <div className="radarMetaLine" aria-label="雷达状态" aria-live="polite">
           <span>可玩优先</span>
           <span>{radarStatusText}</span>
-          {analysis ? <span>AI {radarMarketRegimeLabel(analysis.marketRegime)}</span> : null}
+          {analysisNotConfigured ? <span>LLM 未配置</span> : analysis ? <span>{analysisFromLlm ? "AI" : "指标"} {radarMarketRegimeLabel(analysis.marketRegime)}</span> : null}
+          {analysis?.marketBias && !analysisNotConfigured ? <span className={`radarBiasTag ${analysisBias.tone}`}>{analysisBias.label}</span> : null}
         </div>
       </div>
 
@@ -6410,26 +7148,56 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
         <Button className="primaryButton" type="button" onClick={() => loadRadar(true)} disabled={loading} size="xs" leftSection={<Search size={16} />}>
           {scanButtonLabel}
         </Button>
-        <Button className="secondaryButton" type="button" onClick={() => loadAnalysis(Boolean(analysis))} disabled={!payload || loading || analysisLoading} variant="default" size="xs" leftSection={<BrainCircuit size={16} />}>
+        <Button className="secondaryButton" type="button" onClick={() => loadAnalysis(Boolean(analysis))} disabled={!payload || loading || analysisLoading} aria-busy={analysisLoading} variant="default" size="xs" title="对全市场候选池生成 AI 观察，不针对单个选中合约" leftSection={<BrainCircuit size={16} className={analysisLoading ? "radarAnalysisSpinner isSpinning" : "radarAnalysisSpinner"} />}>
           {analysisButtonLabel}
         </Button>
       </Paper>
 
       {analysisLoading || analysisError || analysis ? (
-        <Paper component="section" className={`radarAnalysisPanel ${analysis ? "ready" : "compactState"}`} aria-label="AI 大盘分析">
+        <Paper component="section" className={`radarAnalysisPanel ${analysisNotConfigured ? "setup" : analysis ? "ready" : "compactState"}`} aria-label={analysisNotConfigured ? "LLM 未配置" : analysisTitle}>
           {analysisLoading ? (
-            <div className="radarBriefState">
-              <BrainCircuit size={16} />
-              正在基于当前雷达扫描生成大盘分析...
+            <div className="radarBriefState radarBriefLoading" aria-live="polite">
+              <Loader size={16} type="oval" aria-hidden="true" />
+              <span className="radarBriefLoadingText">
+                <strong>正在读取分析配置…</strong>
+                <small>正在检查 LLM 配置与行情摘要，请稍候。</small>
+              </span>
             </div>
           ) : analysisError ? (
             <Notice tone="danger">{analysisError}</Notice>
           ) : analysis ? (
+            analysisNotConfigured ? (
+              <div className="radarAnalysisSetup" role="status" aria-live="polite">
+                <div className="radarSetupIcon"><BrainCircuit size={19} aria-hidden="true" /></div>
+                <div className="radarSetupBody">
+                  <span className="eyebrow">全市场 AI 观察未运行</span>
+                  <strong>{setupGuide?.title ?? "尚未配置 LLM"}</strong>
+                  <p>{setupGuide?.description ?? "未配置模型时不展示分析结果，请前往「设置 · AI 配置」完成配置。"}</p>
+                  {(setupGuide?.steps ?? []).length ? (
+                    <ol className="radarSetupSteps">
+                      {(setupGuide?.steps ?? []).map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}
+                    </ol>
+                  ) : null}
+                  {setupGuide?.providerHint ? <p className="radarSetupHint">{setupGuide.providerHint}</p> : null}
+                  <div className="radarSetupActions">
+                    <Button className="primaryButton" type="button" size="xs" leftSection={<UserCog size={14} />} onClick={() => { window.location.hash = setupGuide?.settingsPath ?? "#/settings/llm"; }}>
+                      前往 AI 配置
+                    </Button>
+                    <Button className="secondaryButton" type="button" size="xs" variant="default" leftSection={<RefreshCw size={14} />} onClick={() => loadAnalysis(true)} disabled={analysisLoading}>
+                      重新检测
+                    </Button>
+                  </div>
+                  <span className="radarSetupNote"><Info size={13} aria-hidden="true" />保存配置后无需重新扫描，点「重新检测」即可。</span>
+                </div>
+              </div>
+            ) : (
             <>
               <div className="radarBriefHero">
-                <span className="eyebrow">AI 大盘分析</span>
+                <span className="eyebrow">{analysisTitle}</span>
                 <div className="radarBriefTitle">
                   <strong>{radarMarketRegimeLabel(analysis.marketRegime)}</strong>
+                  {!analysisFromLlm ? <span className="radarAnalysisSourceTag">规则生成</span> : null}
+                  {analysis.marketBias ? <span className={`radarBiasTag ${analysisBias.tone}`}>{analysisBias.label}</span> : null}
                   <span>置信 {analysis.confidence}</span>
                 </div>
                 <p>{analysis.summary}</p>
@@ -6444,17 +7212,63 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
                   <p>{compactHighlights.length ? compactHighlights.join("；") : "暂无要点，建议刷新 AI。"}</p>
                 </div>
                 <div className="radarBriefCard">
-                  <span>重点观察</span>
-                  <p>
-                    {compactWatchlist.length
-                      ? compactWatchlist.map((item) => item.instId).join(" / ")
-                      : "当前没有足够清晰的观察列表。"}
-                  </p>
-                </div>
-                <div className="radarBriefCard">
                   <span>风险</span>
                   <p>{compactRisks.length ? compactRisks.join("；") : "未返回额外风险，仍需控制仓位。"}</p>
                 </div>
+              </div>
+              {displayWatchlist.length ? (
+                <div className="radarBriefWatchlistFull" aria-label="重点观察 方向与入手价位">
+                  <div className="radarWatchHead">
+                    <span className="eyebrow">重点观察 · 方向与入手价位</span>
+                    <span className="radarWatchHint">全市场候选池 · 研究参考</span>
+                  </div>
+                  <ul className="radarWatchlistItems">
+                    {displayWatchlist.map((item) => {
+                      const dir = radarDirectionView(item.direction);
+                      return (
+                        <li
+                          key={item.instId}
+                          className={item.isSelected ? "radarWatchSelected" : undefined}
+                          aria-current={item.isSelected ? "true" : undefined}
+                        >
+                          <span className="radarWatchInst">{item.instId}</span>
+                          {item.selectedNote ? <span className="radarWatchSelectedTag">{item.selectedNote}</span> : null}
+                          <span className={`radarDirectionTag ${item.direction ? dir.tone : "neutral"}`}>
+                            {item.direction ? dir.label : "方向待确认"}
+                          </span>
+                          <span className="radarWatchEntry">{item.entryZone || "参考盘面实时价位"}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+              {sentimentView ? (
+                <div className="radarBriefSentiment" aria-label="多空情绪">
+                  <div className="radarSentimentHead">
+                    <span className="eyebrow">多空情绪</span>
+                    <span className={`radarSentimentTag ${sentimentView.tone}`}>{sentimentView.label}</span>
+                  </div>
+                  <div className="radarSentimentBar" role="img" aria-label={`样本 ${fundingSampled} 个，偏多 ${bullPct}%`}>
+                    <span className="bull" style={{ width: `${bullPct}%` }} />
+                    <span className="neu" style={{ width: `${neuPct}%` }} />
+                    <span className="bear" style={{ width: `${bearPct}%` }} />
+                  </div>
+                  <div className="radarSentimentMetrics">
+                    <div className="radarSentimentMetric">
+                      <span>资金费率</span>
+                      <p>{sentimentView.fundingText}</p>
+                    </div>
+                    <div className="radarSentimentMetric">
+                      <span>持仓名义市值</span>
+                      <p>{sentimentView.oiText}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              <div className="radarBriefDisclaimer" aria-live="polite">
+                <Info size={14} />
+                <span>方向倾向与入手价位仅为研究参考，不构成投资建议；请独立决策并严格控制杠杆与止损。</span>
               </div>
               {compactAnalysisWarning ? (
                 <div className="radarBriefWarning">
@@ -6462,7 +7276,8 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
                   <span>{compactAnalysisWarning}</span>
                 </div>
               ) : null}
-            </>
+              </>
+            )
           ) : null}
         </Paper>
       ) : null}
@@ -6501,6 +7316,7 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
           <div className="radarTableHeader">
             <span>合约</span>
             <span>机会</span>
+            <span>方向</span>
             <span>{activeSortLabel}</span>
           </div>
           <div className="radarList" ref={radarListRef}>
@@ -6517,12 +7333,26 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
                   onClick={() => setSelectedInstId(item.instId)}
                 >
                   <span className="radarContract">
-                    <strong>#{index + 1} {item.instId}</strong>
+                    <strong>
+                      #{index + 1} {item.instId}
+                      {item.explainedBy === "llm" ? <span className="radarRowAi" title="方向与入手价位由 AI 解读生成">AI</span> : null}
+                    </strong>
                     <small>{radarEntryLabel(item.entryAssessment)} · {radarTradabilityLabel(item.tradabilityStatus)} · {radarRiskLabel(item.riskLevel)}</small>
                   </span>
                   <span className={`radarScore ${radarScoreClass(item.scores.opportunity)}`}>
-                    {item.scores.opportunity}
+                    <strong>{item.scores.opportunity}</strong>
+                    <span className="radarScoreHeat" aria-hidden="true">
+                      <span style={{ width: `${Math.max(6, Math.min(100, Number(item.scores.opportunity ?? 0)))}%` }} />
+                    </span>
                   </span>
+                  {item.direction ? (
+                    <span
+                      className={`radarRowDir ${radarDirectionView(item.direction).tone}`}
+                      title={item.entryZone ? `参考价位：${item.entryZone}` : "AI 研究方向倾向（仅供研究参考）"}
+                    >
+                      {radarDirectionView(item.direction).label}
+                    </span>
+                  ) : null}
                   <span title={radarTurnoverWindow(item, activeSort).warning || activeSortLabel}>{radarTurnoverCompact(item, activeSort)}</span>
                 </UnstyledButton>
               ))
@@ -6565,6 +7395,30 @@ function ContractRadarPage({ onOpenContract }: { onOpenContract: (instId: string
                 <Metric label="24h 振幅" value={`${formatValue(selectedResult.range24hPct)}%`} />
                 <Metric label="风险提醒" value={radarRiskSummary(selectedResult.riskLevel)} />
               </div>
+
+              {selectedResult.direction || selectedResult.entryZone ? (
+                <div className={`radarTradeRef ${selectedResult.direction ? radarDirectionView(selectedResult.direction).tone : "neutral"}`}>
+                  <div className="radarTradeRefHead">
+                    <span className="eyebrow">交易参考 · 研究</span>
+                    <span className={`radarDirectionTag ${selectedResult.direction ? radarDirectionView(selectedResult.direction).tone : "neutral"}`}>
+                      {selectedResult.direction ? radarDirectionView(selectedResult.direction).label : "方向待确认"}
+                    </span>
+                  </div>
+                  <div className="radarTradeRefBody">
+                    <div>
+                      <span>方向倾向</span>
+                      <strong>{selectedResult.direction ? radarDirectionView(selectedResult.direction).label : "待确认"}</strong>
+                    </div>
+                    <div>
+                      <span>参考入手价位</span>
+                      <strong>{selectedResult.entryZone || "参考盘面实时价位"}</strong>
+                    </div>
+                  </div>
+                  <p className="radarTradeRefSource">
+                    {selectedResult.explainedBy === "llm" ? "由 AI 解读生成" : "由指标规则生成"} · 仅供研究参考，非投资建议
+                  </p>
+                </div>
+              ) : null}
 
               <RadarFlowSnapshot stats={radarFlowStats} />
 
@@ -6663,7 +7517,7 @@ function useMarketInstrumentRows({
   selected,
   sortMode,
   tickers,
-  limit = 500
+  limit = 2000
 }: {
   instruments: Instrument[];
   filter: InstrumentFilter;
@@ -6847,7 +7701,7 @@ function MarketInstrumentRail({
                   className="instrumentMain"
                   onClick={() => onSelectContract(item.inst_id)}
                   aria-current={selected === item.inst_id ? "true" : undefined}
-                  title={`${instrumentSummaryLabel(item, item.inst_id)} · ${stateLabel(item.state)}`}
+                  title={`${instrumentSummaryLabel(item, item.inst_id)} · ${stateLabel(item.state)} · ${instrumentActivityLabel(itemTicker, item.inst_id)} · 今日涨跌 ${formatSignedPercent(itemChange.percent)}`}
                 >
                   <span className="instrumentAvatar">
                     {instrumentAvatarText(item.inst_id)}
@@ -6857,7 +7711,10 @@ function MarketInstrumentRail({
                       <strong>{instrumentDisplaySymbol(item.inst_id)}</strong>
                       <Badge className="instrumentTypeTag">{instrumentContractTypeLabel(item, item.inst_id)}</Badge>
                     </span>
-                    <span className="instrumentSubtitle">
+                    <span
+                      className="instrumentSubtitle"
+                      title={`${itemAssetName} · ${instrumentSettlementLabel(item, item.inst_id)} · ${instrumentActivityLabel(itemTicker, item.inst_id)} · ${instrumentSummaryLabel(item, item.inst_id)}`}
+                    >
                       {itemAssetName} · {instrumentSettlementLabel(item, item.inst_id)} · {instrumentActivityLabel(itemTicker, item.inst_id)}
                     </span>
                   </div>
@@ -6935,7 +7792,7 @@ function MarketContractWorkspace({
   const loadInstruments = React.useCallback(async () => {
     setInstrumentsLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/instruments?limit=500`);
+      const response = await fetch(`${API_BASE}/api/instruments?limit=2000`);
       if (!response.ok) throw new Error("合约列表加载失败");
       const payload = await response.json();
       setInstruments(payload.data ?? []);
@@ -8207,7 +9064,13 @@ function MarketStatsPage() {
   );
 }
 
-function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: string }) {
+function TradingPage({
+  initialInstId = "BTC-USDT-SWAP",
+  onOpenOrders
+}: {
+  initialInstId?: string;
+  onOpenOrders?: () => void;
+}) {
   const confirmAction = useConfirmAction();
   const [settings, setSettings] = React.useState<SettingsStatus | null>(null);
   const [tradingAccount, setTradingAccount] = React.useState<AccountResponse | null>(null);
@@ -8230,33 +9093,29 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
   const [leverageLoading, setLeverageLoading] = React.useState(false);
   const posSide = posSideForTradeOrder(side, reduceOnly);
   const tradeDirectionOptions = reduceOnly ? reduceOnlySideOptions : sideOptions;
-  const [orderEvents, setOrderEvents] = React.useState<SimOrderEvent[]>([]);
-  const [orderSearch, setOrderSearch] = React.useState("");
-  const [orderActionFilter, setOrderActionFilter] = React.useState("");
-  const [orderStateFilter, setOrderStateFilter] = React.useState("");
-  const [orderScope, setOrderScope] = React.useState<"current" | "all">("current");
-  const [orderPageIndex, setOrderPageIndex] = React.useState(1);
-  const [orderPageSize, setOrderPageSize] = React.useState(20);
-  const [orderPaging, setOrderPaging] = React.useState({
-    limit: 20,
-    offset: 0,
-    hasMore: false,
-    total: 0,
-    page: 1,
-    pageCount: 1
-  });
   const [showAdvancedOrderTypes, setShowAdvancedOrderTypes] = React.useState(false);
-  const [status, setStatus] = React.useState("加载中");
+  // 初始不占用「加载中」状态：账户概览条已表达连接状态，底部再挂一行加载提示只会白占高度、
+  // 把下单面板的提交按钮挤出视口。数据到达后由各实时/轮询回调写入具体状态。
+  const [status, setStatus] = React.useState("");
   const [warning, setWarning] = React.useState("");
   const [updatedAt, setUpdatedAt] = React.useState<number | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
   const [applyingLeverage, setApplyingLeverage] = React.useState(false);
   const instrumentPickerRef = React.useRef<HTMLDivElement | null>(null);
   const accountLoadingRef = React.useRef(false);
+  const accountRequestSeqRef = React.useRef(0);
+  const accountLastFetchRef = React.useRef(0);
   const leverageLoadingRef = React.useRef(false);
   const leverageRequestSeqRef = React.useRef(0);
-  const loadingOrdersRef = React.useRef(false);
-  const ordersRequestSeqRef = React.useRef(0);
+  const pendingClOrdIdRef = React.useRef<string>("");
+
+  // 交易工作台：挂单/持仓就地视图与操作
+  const [pendingOrders, setPendingOrders] = React.useState<PendingOrder[]>([]);
+  const [pendingSource, setPendingSource] = React.useState("");
+  const [cancelingOrdId, setCancelingOrdId] = React.useState("");
+  const [closingWorkbenchKey, setClosingWorkbenchKey] = React.useState("");
+  const [ordersWarning, setOrdersWarning] = React.useState("");
+  const pendingRequestSeqRef = React.useRef(0);
 
   React.useEffect(() => {
     const normalized = initialInstId.trim().toUpperCase();
@@ -8337,12 +9196,26 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
   );
   const advancedOrderTypeSelected = advancedOrderTypeOptions.some((item) => item.key === ordType);
   const visibleAdvancedOrderTypes = showAdvancedOrderTypes || advancedOrderTypeSelected;
-  const orderPageCount = Math.max(1, orderPaging.pageCount || 1);
-  const orderCurrentPage = Math.min(Math.max(1, orderPaging.page || orderPageIndex), orderPageCount);
-  const orderRangeStart = orderPaging.total ? orderPaging.offset + 1 : 0;
-  const orderRangeEnd = Math.min(orderPaging.offset + orderEvents.length, orderPaging.total);
   const leverageDisplay = leverageLoading ? "读取中" : formatLeverage(currentLeverage);
   const leverageContext = `${instId.toUpperCase()} · ${leverageScope}`;
+
+  // 工作台概览数据：复用 /api/account 已返回的 positions 与 summary
+  const workbenchPositions = React.useMemo(
+    () => (tradingAccount?.positions ?? []).filter(positionIsOpen),
+    [tradingAccount]
+  );
+  const workbenchDetails = React.useMemo(
+    () => (tradingAccount?.summary ? accountDetails(tradingAccount.summary) : []),
+    [tradingAccount]
+  );
+  const workbenchTotalEquity = React.useMemo(
+    () => (tradingAccount?.summary ? firstMetric(tradingAccount.summary, workbenchDetails, "totalEq", ["eqUsd"]) : ""),
+    [tradingAccount, workbenchDetails]
+  );
+  const workbenchUpl = React.useMemo(
+    () => workbenchPositions.reduce((sum, item) => sum + (positionNumber(item, ["upl"]) ?? 0), 0),
+    [workbenchPositions]
+  );
 
   const loadSettings = React.useCallback(async () => {
     const response = await fetch(`${API_BASE}/api/settings/status`);
@@ -8350,13 +9223,23 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
     setSettings(await response.json());
   }, []);
 
-  const loadTradingAccount = React.useCallback(async (force = false) => {
+  const loadTradingAccount = React.useCallback(async (force = false, skipThrottle = false) => {
     if (accountLoadingRef.current) return;
+    // 节流：REST 轮询与 WS 私有频道事件都会触发刷新。后端 /api/account 自带缓存，
+    // 短窗口内的 force 拉取无新数据，跳过可避免 WS 事件风暴放大账户接口调用。
+    // 下单/切环境等关键操作传 skipThrottle=true，保证状态立即刷新，不受节流影响。
+    const now = Date.now();
+    if (force && !skipThrottle && now - accountLastFetchRef.current < ACCOUNT_REFRESH_MIN_MS) return;
+    accountLastFetchRef.current = now;
+    // seq 防竞态：只让最后一次请求的结果落盘，避免旧的慢响应覆盖新快照。
+    const requestSeq = accountRequestSeqRef.current + 1;
+    accountRequestSeqRef.current = requestSeq;
     accountLoadingRef.current = true;
     try {
       const response = await fetch(`${API_BASE}/api/account${force ? "?force=true" : ""}`);
       if (!response.ok) return;
-      setTradingAccount(await response.json());
+      const payload = await response.json();
+      if (requestSeq === accountRequestSeqRef.current) setTradingAccount(payload);
     } finally {
       accountLoadingRef.current = false;
     }
@@ -8408,11 +9291,9 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
         throw new Error(payload.detail ?? "交易环境切换失败");
       }
       setSettings(await response.json());
-      await loadTradingAccount(true);
+      await loadTradingAccount(true, true);
       await loadLeverage();
-      setOrderEvents([]);
       setStatus(`${environmentLabel(environment)}已切换`);
-      await loadOrders(true);
     } catch (error) {
       setWarning(error instanceof Error ? error.message : "交易环境切换失败");
     } finally {
@@ -8420,8 +9301,90 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
     }
   };
 
+  // 工作台就地撤单：复用订单页的确认+环境隔离语义，成功后同步刷新挂单与账户。
+  const cancelWorkbenchOrder = async (order: PendingOrder) => {
+    const ordId = (order.ordId ?? "").trim();
+    const clOrdId = (order.clOrdId ?? "").trim();
+    const orderKey = ordId || clOrdId || `${order.instId ?? ""}-${order.ctime ?? ""}`;
+    const detail = [
+      `环境：${environmentLabel(activeEnvironment)}`,
+      `合约：${order.instId ?? "--"}`,
+      `方向：${orderTradeDirectionLabel(order.side?.toLowerCase() ?? "", false)}`,
+      `订单号：${orderKey}`
+    ].join("\n");
+    if (!(await confirmAction(`确认撤销以下挂单？\n${detail}`))) return;
+    setCancelingOrdId(orderKey);
+    setOrdersWarning("");
+    try {
+      const response = await fetch(`${API_BASE}/api/trading/orders/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          environment: activeEnvironment,
+          instId: order.instId,
+          ordId: ordId || undefined,
+          clOrdId: ordId ? undefined : clOrdId
+        })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail ?? "撤销挂单失败");
+      setStatus("挂单已撤销");
+      await Promise.all([loadPendingOrders(), loadTradingAccount(true, true)]);
+    } catch (error) {
+      setOrdersWarning(error instanceof Error ? error.message : "撤销挂单失败");
+    } finally {
+      setCancelingOrdId("");
+    }
+  };
+
+  // 工作台快速平仓：市价全平，确认后走后端 reduceOnly 平仓端点。
+  const quickClosePosition = async (position: Record<string, string>) => {
+    if (!tradeEnabled) {
+      setOrdersWarning(tradeBlockedDetail(settings));
+      return;
+    }
+    const closeOrder = positionCloseOrder(position);
+    if (!closeOrder) {
+      setOrdersWarning("该持仓没有可平数量。");
+      return;
+    }
+    const rowKey = `${closeOrder.instId}-${closeOrder.posSide}`;
+    const confirmLines = [
+      `环境：${environmentLabel(activeEnvironment)}`,
+      `合约：${closeOrder.instId}`,
+      `方向：${closeOrder.label}`,
+      `可平：${closeOrder.sz} 张`,
+      "方式：市价全平"
+    ];
+    const liveWarning = activeEnvironment === "live" ? "\n\n注意：这会向 OKX 真实盘提交平仓请求。" : "";
+    if (!(await confirmAction(`确认提交市价平仓？\n${confirmLines.join("\n")}${liveWarning}`))) return;
+    setClosingWorkbenchKey(rowKey);
+    setOrdersWarning("");
+    try {
+      const response = await fetch(`${API_BASE}/api/trading/positions/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instId: closeOrder.instId,
+          mgnMode: positionCloseTradeMode(position),
+          posSide: closeOrder.posSide,
+          autoCxl: false,
+          environment: activeEnvironment
+        })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail ?? "平仓提交失败");
+      setStatus("市价平仓请求已提交");
+      await Promise.all([loadTradingAccount(true, true), loadPendingOrders()]);
+    } catch (error) {
+      setOrdersWarning(error instanceof Error ? error.message : "平仓提交失败");
+    } finally {
+      setClosingWorkbenchKey("");
+    }
+  };
+
   const loadInstruments = React.useCallback(async () => {
-    const response = await fetch(`${API_BASE}/api/instruments?limit=500`);
+    const response = await fetch(`${API_BASE}/api/instruments?limit=2000`);
     if (!response.ok) throw new Error("合约加载失败");
     const payload = await response.json();
     setInstruments(payload.data ?? []);
@@ -8443,50 +9406,27 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
     );
   }, []);
 
-  const loadOrders = React.useCallback(async (_force = false) => {
-    const requestSeq = ordersRequestSeqRef.current + 1;
-    ordersRequestSeqRef.current = requestSeq;
-    loadingOrdersRef.current = true;
+  // 工作台挂单：与订单页同源（/api/trading/orders 的 pending），只取可撤销的挂单。
+  // seq 防竞态，避免慢响应覆盖最新挂单视图。
+  const loadPendingOrders = React.useCallback(async () => {
+    const requestSeq = pendingRequestSeqRef.current + 1;
+    pendingRequestSeqRef.current = requestSeq;
     try {
-      const params = new URLSearchParams({
-        limit: String(orderPageSize),
-        offset: String((Math.max(1, orderPageIndex) - 1) * orderPageSize)
-      });
-      if (orderScope === "current" && instId.trim()) params.set("instId", instId.trim().toUpperCase());
-      if (orderSearch.trim()) params.set("q", orderSearch.trim());
-      if (orderActionFilter) params.set("action", orderActionFilter);
-      if (orderStateFilter) params.set("state", orderStateFilter);
-      const response = await fetch(`${API_BASE}/api/trading/orders?${params.toString()}`);
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.detail ?? "订单加载失败");
-      }
+      const response = await fetch(`${API_BASE}/api/trading/orders?limit=100`);
+      if (!response.ok) return;
       const payload: SimOrdersResponse = await response.json();
-      if (requestSeq !== ordersRequestSeqRef.current) return;
-      setOrderEvents(payload.events ?? []);
-      setOrderPaging(
-        payload.paging ?? {
-          limit: orderPageSize,
-          offset: (Math.max(1, orderPageIndex) - 1) * orderPageSize,
-          hasMore: false,
-          total: payload.events?.length ?? 0,
-          page: orderPageIndex,
-          pageCount: 1
-        }
+      if (requestSeq !== pendingRequestSeqRef.current) return;
+      setPendingOrders(
+        (payload.pending ?? []).filter(
+          (order) => order.state === "live" || order.state === "partially_filled"
+        )
       );
-      setUpdatedAt(payload.ts ?? Date.now());
-      setWarning(payload.warning ?? payload.message ?? "");
-      setStatus(tradeSourceLabel(payload.source));
-    } catch (error) {
-      if (requestSeq !== ordersRequestSeqRef.current) return;
-      setWarning(error instanceof Error ? error.message : "订单加载失败");
-      setStatus("订单接口异常");
-    } finally {
-      if (requestSeq === ordersRequestSeqRef.current) {
-        loadingOrdersRef.current = false;
-      }
+      setPendingSource(payload.source ?? "");
+    } catch {
+      // 挂单是辅助视图，读取失败时保留上次数据，不打扰下单主流程
     }
-  }, [instId, orderActionFilter, orderPageIndex, orderPageSize, orderScope, orderSearch, orderStateFilter]);
+  }, []);
+
 
   React.useEffect(() => {
     loadSettings().catch((error) => setWarning(error.message));
@@ -8494,7 +9434,8 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
     loadLeverage().catch(() => undefined);
     loadInstruments().catch((error) => setWarning(error.message));
     loadTickers().catch(() => undefined);
-  }, [loadInstruments, loadLeverage, loadSettings, loadTickers, loadTradingAccount]);
+    loadPendingOrders().catch(() => undefined);
+  }, [loadInstruments, loadLeverage, loadPendingOrders, loadSettings, loadTickers, loadTradingAccount]);
 
   React.useEffect(() => {
     loadLeverage().catch(() => undefined);
@@ -8505,63 +9446,49 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
   }, [instId, tdMode, posSide]);
 
   React.useEffect(() => {
-    setOrderPageIndex(1);
-  }, [instId, orderActionFilter, orderPageSize, orderScope, orderSearch, orderStateFilter]);
-
-  React.useEffect(() => {
-    if (orderPageIndex > orderPageCount) {
-      setOrderPageIndex(orderPageCount);
-    }
-  }, [orderPageCount, orderPageIndex]);
-
-  React.useEffect(() => {
     if (!leverageDirty) {
       setLeverageInput(currentLeverage !== null ? formatOrderNumber(currentLeverage, 2) : "");
     }
   }, [currentLeverage, leverageDirty]);
 
   React.useEffect(() => {
-    loadOrders().catch(() => undefined);
-    const refreshVisibleOrders = () => {
+    const refreshVisibleTrade = () => {
       if (!document.hidden) {
-        loadOrders().catch(() => undefined);
         loadTickers().catch(() => undefined);
         loadTradingAccount().catch(() => undefined);
         loadLeverage().catch(() => undefined);
+        loadPendingOrders().catch(() => undefined);
+        setUpdatedAt(Date.now());
       }
     };
-    const timer = window.setInterval(refreshVisibleOrders, ORDER_POLL_MS);
-    document.addEventListener("visibilitychange", refreshVisibleOrders);
+    const timer = window.setInterval(refreshVisibleTrade, ORDER_POLL_MS);
+    document.addEventListener("visibilitychange", refreshVisibleTrade);
     return () => {
       window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshVisibleOrders);
+      document.removeEventListener("visibilitychange", refreshVisibleTrade);
     };
-  }, [loadLeverage, loadOrders, loadTickers, loadTradingAccount]);
+  }, [loadLeverage, loadPendingOrders, loadTickers, loadTradingAccount]);
 
   const tradeRealtime = useRealtimeFeed({
-    topics: ["market.ticker", "account", "positions", "orders"],
+    topics: ["market.ticker", "account", "positions"],
     instId: instId.toUpperCase(),
     instIds: [instId.toUpperCase()],
     environment: activeEnvironment,
     onSnapshotRequired: (payload) => {
       if (payload.topic === "market.ticker") loadTickers().catch(() => undefined);
       if (payload.topic === "account" || payload.topic === "positions") loadTradingAccount(true).catch(() => undefined);
-      if (payload.topic === "orders") loadOrders(true).catch(() => undefined);
     },
     onEvent: (payload) => {
       if (payload.type === "market.ticker" && payload.instId && payload.data) {
         setTickers((current) => ({ ...current, [payload.instId as string]: payload.data as Ticker }));
         setStatus("实时价格已更新");
       }
-      if (payload.type === "order.update") {
-        loadOrders(true).catch(() => undefined);
-        setStatus("订单状态已实时更新");
-      }
       if (payload.type === "account.update" || payload.type === "position.update") {
-        loadTradingAccount(true).catch(() => undefined);
+        // 刷新由上面的 onSnapshotRequired（refreshRequired）统一驱动，这里只更新提示，
+        // 避免同一事件触发两次账户拉取。若后端事件未带 refreshRequired，则由 REST 轮询兜底。
         setStatus(payload.type === "account.update" ? "账户信息有实时更新" : "持仓信息有实时更新");
       }
-      if (payload.type === "disabled" && ["account", "positions", "orders"].includes(payload.topic ?? "")) {
+      if (payload.type === "disabled" && ["account", "positions"].includes(payload.topic ?? "")) {
         setStatus(payload.message ?? "私有实时频道未启用");
       }
       if (payload.type === "error" || payload.type === "stale") {
@@ -8689,7 +9616,8 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
           instId: normalizedInstId,
           mgnMode: tdMode,
           posSide,
-          lever
+          lever,
+          environment: activeEnvironment
         })
       });
       if (!response.ok) {
@@ -8708,7 +9636,7 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
       setLeverageDirty(false);
       setStatus(`${environmentLabel(activeEnvironment)}${leverageScope}杠杆已设置为 ${lever}x`);
       await loadLeverage();
-      await loadTradingAccount(true);
+      await loadTradingAccount(true, true);
     } catch (error) {
       setWarning(error instanceof Error ? error.message : "杠杆设置失败");
     } finally {
@@ -8718,6 +9646,7 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
 
   const submitOrder = async (event?: React.FormEvent, localOnly = false) => {
     event?.preventDefault();
+    if (submitting) return;
     setWarning("");
     if (!localOnly && !tradeEnabled) {
       setWarning(`${environmentLabel(activeEnvironment)}下单未开启。`);
@@ -8763,6 +9692,8 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
     const confirmExtra = localOnly ? "\n\n本地模拟订单只保存到数据库，不会发送到 OKX。" : "";
     if (!(await confirmAction(`确认提交 ${targetLabel}订单？\n${summary}${confirmExtra}`))) return;
 
+    if (!pendingClOrdIdRef.current) pendingClOrdIdRef.current = makeClientOrderId();
+    const clOrdId = pendingClOrdIdRef.current;
     setSubmitting(true);
     try {
       const response = await fetch(`${API_BASE}/api/trading/orders${localOnly ? "/local" : ""}`, {
@@ -8776,27 +9707,34 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
           ordType,
           sz: submitSize,
           px: priceRequired ? px.trim() : undefined,
-          reduceOnly
+          reduceOnly,
+          environment: activeEnvironment,
+          clOrdId
         })
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail ?? "订单提交失败");
       }
-      const payload = await response.json();
-      setStatus(localOnly ? "本地模拟订单已保存" : `${environmentLabel(activeEnvironment)}订单已提交`);
-      setOrderEvents((current) => [payload.event, ...current].filter(Boolean));
-      await loadOrders();
+      await response.json().catch(() => ({}));
+      setStatus(
+        localOnly
+          ? "本地模拟订单已保存，可在「订单」页查看"
+          : `${environmentLabel(activeEnvironment)}订单已提交，可在「订单」页查看`
+      );
+      setUpdatedAt(Date.now());
+      // 提交成功后清空幂等键：下一次提交是新的意图，生成新的 clOrdId。
+      pendingClOrdIdRef.current = "";
     } catch (error) {
+      // 失败保留 clOrdId（含网络错误），同一意图重试复用，避免 OKX 重复成交。
       setWarning(error instanceof Error ? error.message : "订单提交失败");
-      await loadOrders(true);
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <section className="tradePage">
+    <section className="tradePage tradePageWorkbench">
       <PageHeader eyebrow="手动交易" title="OKX 交易环境" description={`${status}${updatedAt ? ` · ${new Date(updatedAt).toLocaleTimeString("zh-CN")}` : ""}`} actions={
         <div className="workspaceActions">
           <div className="environmentSwitch" aria-label="交易环境切换">
@@ -8829,25 +9767,53 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
               {apiCredentialLabel("真实盘", settings?.liveHasCredentials)}
             </Badge>
           </div>
+          {onOpenOrders ? (
+            <Button type="button" variant="default" className="secondaryButton" onClick={onOpenOrders} leftSection={<Receipt size={16} />}>
+              订单记录
+            </Button>
+          ) : null}
           <IconButton
-            label="刷新订单"
+            label="刷新账户与行情"
             onClick={() => {
               loadSettings().catch(() => undefined);
               loadInstruments().catch(() => undefined);
-              loadOrders().catch(() => undefined);
               loadTickers().catch(() => undefined);
               loadLeverage().catch(() => undefined);
+              setUpdatedAt(Date.now());
             }}
           >
             <RefreshCw size={16} />
           </IconButton>
         </div>
       } />
-      {status === "加载中" ? <DataLoadingState label="正在读取交易账户、杠杆与订单数据" compact /> : null}
-
       {warning ? <Notice tone="danger">{warning}</Notice> : null}
 
-      <section className="tradeGrid">
+      <section className="tradeWorkbenchOverview" aria-label="交易概览">
+        <div className="workbenchOverviewHead">
+          <div className="workbenchOverviewTitle">
+            <WalletCards size={17} aria-hidden="true" />
+            <strong>账户概览</strong>
+            <span className={`stateBadge ${tradingAccount?.configured ? "live" : ""}`}>
+              {tradingAccount?.configured ? environmentLabel(activeEnvironment) : "账户未连接"}
+            </span>
+          </div>
+          <div className="workbenchOverviewMetrics">
+            <MiniMetric label="账户权益" value={formatValue(workbenchTotalEquity)} />
+            <MiniMetric label={`可用保证金 · ${marginCurrency || "--"}`} value={formatOrderNumber(marginAvailable)} />
+            <MiniMetric
+              label="未实现盈亏"
+              value={formatSignedValue(workbenchUpl)}
+              valueClass={pnlValueClass(workbenchUpl)}
+            />
+            <MiniMetric label="当前持仓" value={`${workbenchPositions.length} 个`} />
+            <MiniMetric label="当前挂单" value={`${pendingOrders.length} 笔`} />
+          </div>
+        </div>
+      </section>
+
+      {ordersWarning ? <Notice tone="danger">{ordersWarning}</Notice> : null}
+
+      <section className="tradeGrid tradeGridWorkbench">
         <form className="tradeTicket" onSubmit={submitOrder}>
           <PanelHeader
             icon={<Send size={17} />}
@@ -9035,15 +10001,24 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
               }}
             />
             <div className="advancedOrderType">
-              <Button type="button" variant="subtle" size="xs" className="inlineToggleButton" onClick={() => setShowAdvancedOrderTypes((value) => !value)}>
+              <Button
+                type="button"
+                variant="subtle"
+                size="xs"
+                className="inlineToggleButton"
+                aria-expanded={visibleAdvancedOrderTypes}
+                onClick={() => setShowAdvancedOrderTypes((value) => !value)}
+              >
                 <ListChecks size={14} aria-hidden="true" />
-                {advancedOrderTypeSelected ? "高级类型已选" : visibleAdvancedOrderTypes ? "收起高级类型" : "高级类型"}
+                {advancedOrderTypeSelected ? "高级类型已选" : visibleAdvancedOrderTypes ? "收起更多选项" : "更多选项"}
               </Button>
               {visibleAdvancedOrderTypes ? (
-                <SegmentedField label="高级类型" value={ordType} options={advancedOrderTypeOptions} onChange={setOrdType} />
+                <>
+                  <SegmentedField label="数量单位" value={quantityUnit} options={quantityUnitOptions} onChange={changeQuantityUnit} />
+                  <SegmentedField label="高级类型" value={ordType} options={advancedOrderTypeOptions} onChange={setOrdType} />
+                </>
               ) : null}
             </div>
-            <SegmentedField label="数量单位" value={quantityUnit} options={quantityUnitOptions} onChange={changeQuantityUnit} />
           </section>
 
           <section className="tradeTicketSection tradeSubmitSection" aria-label="提交参数">
@@ -9068,7 +10043,7 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
                 </div>
               </label>
               <label className="fieldBlock">
-                <span>数量</span>
+                <span>数量（{quantityLabel}）</span>
                 <TextInput
                   value={sz}
                   inputMode="decimal"
@@ -9130,108 +10105,659 @@ function TradingPage({ initialInstId = "BTC-USDT-SWAP" }: { initialInstId?: stri
           </section>
         </form>
 
-        <section className="ordersPanel history">
-          <PanelHeader icon={<Database size={17} />} title="本地订单记录" meta={`${orderPaging.total} 条`} />
-          <section className="tradeOrderControls" aria-label="订单记录筛选">
-            <TextInput
-              className="tradeOrderSearch"
-              leftSection={<Search size={15} aria-hidden="true" />}
-              value={orderSearch}
-              onChange={(event) => setOrderSearch(event.target.value)}
-              placeholder="搜索合约 / 订单号 / 错误信息"
-              aria-label="搜索订单记录"
+        <div className="tradeWorkbenchSide">
+          <section className="workbenchPanel workbenchPositionsPanel" aria-label="当前持仓">
+            <PanelHeader
+              icon={<WalletCards size={17} />}
+              title="当前持仓"
+              meta={`${workbenchPositions.length} 个 · ${environmentLabel(activeEnvironment)}`}
             />
-            <div className="signalLogMinimalFilter" aria-label="订单记录范围">
-              <Button type="button" variant="subtle" size="xs" className={orderScope === "current" ? "selected" : ""} onClick={() => setOrderScope("current")}>
-                当前合约
+            {!tradingAccount?.configured ? (
+              <EmptyState compact>{tradingAccount?.message ?? "账户未连接，暂无持仓"}</EmptyState>
+            ) : workbenchPositions.length === 0 ? (
+              <EmptyState compact>当前{environmentLabel(activeEnvironment)}没有持仓</EmptyState>
+            ) : (
+              <div className="workbenchTableWrap">
+                <DataTable className="minimalDataTable workbenchPositionTable">
+                  <thead>
+                    <tr><th>合约</th><th>方向</th><th>持仓 / 可平</th><th>均价 / 标记</th><th>未实现盈亏</th><th>操作</th></tr>
+                  </thead>
+                  <tbody>
+                    {workbenchPositions.map((item, index) => {
+                      const upl = positionNumber(item, ["upl"]);
+                      const ratio = positionNumber(item, ["uplRatio"]);
+                      const direction = normalizedPositionSide(item.posSide);
+                      const closeOrder = positionCloseOrder(item);
+                      const rowKey = `${closeOrder?.instId ?? item.instId}-${closeOrder?.posSide ?? direction}`;
+                      const isClosing = closingWorkbenchKey === rowKey;
+                      return (
+                        <tr key={`${item.instId}-${item.posSide}-${item.posId}-${index}`} title={`更新时间 ${formatTime(positionText(item, ["uTime", "cTime"], ""))}`}>
+                          <td>
+                            <strong>{positionText(item, ["instId"])}</strong>
+                            <small>{positionText(item, ["ccy"])} 保证金</small>
+                          </td>
+                          <td>
+                            <Badge className={`signalLogActionTag ${direction === "long" ? "up" : direction === "short" ? "down" : "neutral"}`}>
+                              {positionDirectionLabel(item)}
+                            </Badge>
+                          </td>
+                          <td>
+                            <strong>{positionQuantityText(item, ["pos"])}</strong>
+                            <small>可平 {positionQuantityText(item, ["availPos", "pos"])}</small>
+                          </td>
+                          <td>
+                            <strong>{formatValue(positionText(item, ["avgPx"]))}</strong>
+                            <small>标记 {formatValue(positionText(item, ["markPx", "last", "idxPx"]))}</small>
+                          </td>
+                          <td>
+                            <strong className={pnlValueClass(upl)}>{formatSignedValue(upl)}</strong>
+                            <small className={pnlValueClass(ratio)}>{formatSignedPercentRatio(ratio)}</small>
+                          </td>
+                          <td>
+                            <Button variant="subtle" size="xs"
+                              className="signalLogDetailButton danger"
+                              type="button"
+                              disabled={!closeOrder || !tradeEnabled || isClosing}
+                              onClick={() => quickClosePosition(item)}
+                              title={closeOrder ? `市价全平 ${closeOrder.sz} 张` : "没有可平数量"}
+                            >
+                              <XCircle size={13} aria-hidden="true" />
+                              {isClosing ? "提交中" : "平仓"}
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </DataTable>
+              </div>
+            )}
+          </section>
+
+          <section className="workbenchPanel workbenchPendingPanel" aria-label="当前挂单">
+            <PanelHeader
+              icon={<ChartCandlestick size={17} />}
+              title="当前挂单"
+              meta={`${pendingOrders.length} 笔 · ${tradeSourceLabel(pendingSource)}`}
+            />
+            {pendingOrders.length === 0 ? (
+              <EmptyState compact>当前{environmentLabel(activeEnvironment)}没有可撤销的挂单</EmptyState>
+            ) : (
+              <div className="workbenchTableWrap">
+                <DataTable className="minimalDataTable workbenchPendingTable">
+                  <thead>
+                    <tr><th>时间</th><th>合约 / 订单号</th><th>方向</th><th>价格</th><th>数量(张)</th><th>状态</th><th>操作</th></tr>
+                  </thead>
+                  <tbody>
+                    {pendingOrders.map((order, index) => {
+                      const orderKey = (order.ordId || order.clOrdId || `${order.instId}-${index}`) as string;
+                      const isCanceling = cancelingOrdId === orderKey;
+                      return (
+                        <tr key={orderKey}>
+                          <td>{formatTime(order.ctime)}</td>
+                          <td>
+                            <strong>{order.instId ?? "--"}</strong>
+                            <small title={order.clOrdId || order.ordId || ""}>ID {order.ordId || order.clOrdId || "--"}</small>
+                          </td>
+                          <td>{orderTradeDirectionLabel(order.side?.toLowerCase() ?? "", false)}</td>
+                          <td>{formatValue(order.px)}</td>
+                          <td>{formatValue(order.sz)}</td>
+                          <td>
+                            <span className={`orderStatus ${orderStateClass(order.state)}`}>
+                              <strong>{orderStateLabel(order.state)}</strong>
+                            </span>
+                          </td>
+                          <td>
+                            <Button
+                              color="red"
+                              variant="light"
+                              size="xs"
+                              type="button"
+                              disabled={isCanceling}
+                              onClick={() => cancelWorkbenchOrder(order)}
+                              aria-label={`撤销 ${order.instId ?? ""} 挂单 ${orderKey}`}
+                            >
+                              {isCanceling ? "撤销中" : "撤销"}
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </DataTable>
+              </div>
+            )}
+          </section>
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function OrdersPage({ onOpenTrade }: { onOpenTrade?: () => void }) {
+  const confirmAction = useConfirmAction();
+  const [settings, setSettings] = React.useState<SettingsStatus | null>(null);
+  const [instruments, setInstruments] = React.useState<Instrument[]>([]);
+  const [orderEvents, setOrderEvents] = React.useState<SimOrderEvent[]>([]);
+  const [pendingOrders, setPendingOrders] = React.useState<PendingOrder[]>([]);
+  const [pendingSource, setPendingSource] = React.useState("");
+  const [cancelingOrdId, setCancelingOrdId] = React.useState("");
+  const [orderPnlSummary, setOrderPnlSummary] = React.useState<{
+    pageRealizedTotal: string;
+    pricedCloses: number;
+    closeCount: number;
+    settledCloses?: number;
+  } | null>(null);
+  const [orderSearch, setOrderSearch] = React.useState("");
+  const [orderInstId, setOrderInstId] = React.useState("");
+  const [orderActionFilter, setOrderActionFilter] = React.useState("");
+  const [orderStateFilter, setOrderStateFilter] = React.useState("");
+  const [orderOriginFilter, setOrderOriginFilter] = React.useState<"" | "manual" | "automation">("");
+  const [orderOriginCounts, setOrderOriginCounts] = React.useState({ manual: 0, automation: 0, all: 0 });
+  const [orderPageIndex, setOrderPageIndex] = React.useState(1);
+  const [orderPageSize, setOrderPageSize] = React.useState(20);
+  const [orderPaging, setOrderPaging] = React.useState({
+    limit: 20,
+    offset: 0,
+    hasMore: false,
+    total: 0,
+    page: 1,
+    pageCount: 1
+  });
+  const [status, setStatus] = React.useState("加载中");
+  const [warning, setWarning] = React.useState("");
+  const [updatedAt, setUpdatedAt] = React.useState<number | null>(null);
+  const [switching, setSwitching] = React.useState(false);
+  const loadingOrdersRef = React.useRef(false);
+  const ordersRequestSeqRef = React.useRef(0);
+
+  const activeEnvironment = settings?.tradingEnvironment ?? (settings?.simulatedTrading ? "simulated" : "live");
+  const orderPageCount = Math.max(1, orderPaging.pageCount || 1);
+  const orderCurrentPage = Math.min(Math.max(1, orderPaging.page || orderPageIndex), orderPageCount);
+  const orderRangeStart = orderPaging.total ? orderPaging.offset + 1 : 0;
+  const orderRangeEnd = Math.min(orderPaging.offset + orderEvents.length, orderPaging.total);
+  const instrumentOptions = React.useMemo(() => {
+    const rows = instruments
+      .filter((item) => (item.inst_type ?? "").toUpperCase() === "SWAP")
+      .map((item) => ({ value: item.inst_id, label: item.inst_id }));
+    return [{ value: "", label: "全部合约" }, ...rows];
+  }, [instruments]);
+
+  const loadSettings = React.useCallback(async () => {
+    const response = await fetch(`${API_BASE}/api/settings/status`);
+    if (!response.ok) throw new Error("设置加载失败");
+    setSettings(await response.json());
+  }, []);
+
+  const loadInstruments = React.useCallback(async () => {
+    const response = await fetch(`${API_BASE}/api/instruments?limit=2000`);
+    if (!response.ok) return;
+    const payload = await response.json();
+    setInstruments(payload.data ?? []);
+  }, []);
+
+  const loadOrders = React.useCallback(async () => {
+    const requestSeq = ordersRequestSeqRef.current + 1;
+    ordersRequestSeqRef.current = requestSeq;
+    loadingOrdersRef.current = true;
+    try {
+      const params = new URLSearchParams({
+        limit: String(orderPageSize),
+        offset: String((Math.max(1, orderPageIndex) - 1) * orderPageSize)
+      });
+      if (orderInstId) params.set("instId", orderInstId);
+      if (orderSearch.trim()) params.set("q", orderSearch.trim());
+      if (orderActionFilter) params.set("action", orderActionFilter);
+      if (orderStateFilter) params.set("state", orderStateFilter);
+      if (orderOriginFilter) params.set("origin", orderOriginFilter);
+      const response = await fetch(`${API_BASE}/api/trading/orders?${params.toString()}`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail ?? "订单加载失败");
+      }
+      const payload: SimOrdersResponse = await response.json();
+      if (requestSeq !== ordersRequestSeqRef.current) return;
+      setOrderEvents(payload.events ?? []);
+      setPendingOrders(
+        (payload.pending ?? []).filter(
+          (order) => order.state === "live" || order.state === "partially_filled"
+        )
+      );
+      setPendingSource(payload.source ?? "");
+      setOrderPnlSummary(payload.pnlSummary ?? null);
+      setOrderOriginCounts({
+        manual: payload.originCounts?.manual ?? 0,
+        automation: payload.originCounts?.automation ?? 0,
+        all: payload.originCounts?.all ?? 0
+      });
+      setOrderPaging(
+        payload.paging ?? {
+          limit: orderPageSize,
+          offset: (Math.max(1, orderPageIndex) - 1) * orderPageSize,
+          hasMore: false,
+          total: payload.events?.length ?? 0,
+          page: orderPageIndex,
+          pageCount: 1
+        }
+      );
+      setUpdatedAt(payload.ts ?? Date.now());
+      setWarning(payload.warning ?? payload.message ?? "");
+      setStatus(tradeSourceLabel(payload.source));
+    } catch (error) {
+      if (requestSeq !== ordersRequestSeqRef.current) return;
+      setWarning(error instanceof Error ? error.message : "订单加载失败");
+      setOrderPnlSummary(null);
+      setStatus("订单接口异常");
+    } finally {
+      if (requestSeq === ordersRequestSeqRef.current) {
+        loadingOrdersRef.current = false;
+      }
+    }
+  }, [orderActionFilter, orderInstId, orderOriginFilter, orderPageIndex, orderPageSize, orderSearch, orderStateFilter]);
+
+  React.useEffect(() => {
+    loadSettings().catch((error) => setWarning(error.message));
+    loadInstruments().catch(() => undefined);
+  }, [loadInstruments, loadSettings]);
+
+  React.useEffect(() => {
+    setOrderPageIndex(1);
+  }, [orderActionFilter, orderInstId, orderOriginFilter, orderPageSize, orderSearch, orderStateFilter]);
+
+  React.useEffect(() => {
+    if (orderPageIndex > orderPageCount) {
+      setOrderPageIndex(orderPageCount);
+    }
+  }, [orderPageCount, orderPageIndex]);
+
+  React.useEffect(() => {
+    loadOrders().catch(() => undefined);
+    const refreshVisibleOrders = () => {
+      if (!document.hidden) loadOrders().catch(() => undefined);
+    };
+    const timer = window.setInterval(refreshVisibleOrders, ORDER_POLL_MS);
+    document.addEventListener("visibilitychange", refreshVisibleOrders);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisibleOrders);
+    };
+  }, [loadOrders]);
+
+  const ordersRealtime = useRealtimeFeed({
+    topics: ["orders"],
+    environment: activeEnvironment,
+    onSnapshotRequired: (payload) => {
+      if (payload.topic === "orders") loadOrders().catch(() => undefined);
+    },
+    onEvent: (payload) => {
+      if (payload.type === "order.update") {
+        loadOrders().catch(() => undefined);
+        setStatus("订单状态已实时更新");
+      }
+      if (payload.type === "error" || payload.type === "stale") {
+        setWarning(payload.message ?? payload.warning ?? "实时通道暂不可用，已保留 REST 回退");
+      }
+    }
+  });
+
+  const switchEnvironment = async (environment: "simulated" | "live") => {
+    if (environment === activeEnvironment) return;
+    if (
+      environment === "live" &&
+      !(await confirmAction("确认切换到真实盘？默认只读；只有后端开启实盘交易授权时才可下单。"))
+    ) {
+      return;
+    }
+    setSwitching(true);
+    setWarning("");
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/trading-environment`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ environment })
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail ?? "交易环境切换失败");
+      }
+      setSettings(await response.json());
+      setOrderEvents([]);
+      setOrderPnlSummary(null);
+      setStatus(`${environmentLabel(environment)}已切换`);
+      await loadOrders();
+    } catch (error) {
+      setWarning(error instanceof Error ? error.message : "交易环境切换失败");
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  const cancelPendingOrder = async (order: PendingOrder) => {
+    const ordId = (order.ordId ?? "").trim();
+    const clOrdId = (order.clOrdId ?? "").trim();
+    if (!ordId && !clOrdId) {
+      setWarning("该挂单缺少订单号，无法撤销，请在 OKX 页面处理。");
+      return;
+    }
+    if (!settings?.tradeEnabled) {
+      setWarning(tradeBlockedDetail(settings));
+      return;
+    }
+    const liveWarning = activeEnvironment === "live" ? "\n\n注意：这会向 OKX 真实盘提交撤单请求。" : "";
+    if (
+      !(await confirmAction(
+        `确认撤销以下挂单？\n合约：${order.instId ?? "--"}\n方向：${orderTradeDirectionLabel(order.side?.toLowerCase() ?? "", false)}\n价格：${formatValue(order.px)}\n数量：${formatValue(order.sz)} 张\n订单号：${ordId || clOrdId}${liveWarning}`
+      ))
+    ) {
+      return;
+    }
+    setCancelingOrdId(ordId || clOrdId);
+    setWarning("");
+    try {
+      const response = await fetch(`${API_BASE}/api/trading/orders/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          environment: activeEnvironment,
+          instId: order.instId,
+          ordId: ordId || undefined,
+          clOrdId: ordId ? undefined : clOrdId
+        })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail ?? "撤单失败");
+      setStatus(`撤单请求已提交 · ${order.instId ?? ""}`);
+      await loadOrders();
+    } catch (error) {
+      setWarning(error instanceof Error ? error.message : "撤单失败");
+    } finally {
+      setCancelingOrdId("");
+    }
+  };
+
+  return (
+    <section className="tradePage ordersPage">
+      <PageHeader
+        eyebrow="订单"
+        title="订单记录"
+        description={`${status}${updatedAt ? ` · ${new Date(updatedAt).toLocaleTimeString("zh-CN")}` : ""}`}
+        actions={
+          <div className="workspaceActions">
+            <div className="environmentSwitch" aria-label="交易环境切换">
+              <Button type="button" variant="subtle"
+                className={activeEnvironment === "simulated" ? "selected" : ""}
+                onClick={() => switchEnvironment("simulated")}
+                disabled={switching}
+              >
+                虚拟盘
               </Button>
-              <Button type="button" variant="subtle" size="xs" className={orderScope === "all" ? "selected" : ""} onClick={() => setOrderScope("all")}>
-                全部记录
+              <Button type="button" variant="subtle"
+                className={activeEnvironment === "live" ? "selected danger" : ""}
+                onClick={() => switchEnvironment("live")}
+                disabled={switching}
+              >
+                真实盘
               </Button>
             </div>
-            <label className="tradeOrderSelect">
-              <span>动作</span>
-              <Select aria-label="订单动作" value={orderActionFilter || "all"} onChange={(value) => setOrderActionFilter(value === "all" ? "" : value ?? "")}
-                data={orderRecordActions.map((item) => ({ value: item.key || "all", label: item.label }))} size="xs" />
-            </label>
-            <label className="tradeOrderSelect">
-              <span>状态</span>
-              <Select aria-label="订单状态" value={orderStateFilter || "all"} onChange={(value) => setOrderStateFilter(value === "all" ? "" : value ?? "")}
-                data={orderRecordStates.map((item) => ({ value: item.key || "all", label: item.label }))} size="xs" />
-            </label>
-          </section>
-          <div className="orderTable">
-            <DataTable className="orderHistoryTable">
-              <thead><tr><th>时间</th><th>动作</th><th>合约</th><th>方向</th><th>价格</th><th>数量(张)</th><th>状态</th></tr></thead>
-              <tbody>
-                {orderEvents.map((event, index) => (
+            <div className="statusPills" aria-label="订单状态">
+              <Badge className={`statusPill ${ordersRealtime.connected ? "live" : "warning"}`}>
+                {ordersRealtime.connected ? "实时通道" : "REST 回退"}
+              </Badge>
+              <Badge className="statusPill">
+                {environmentLabel(activeEnvironment)}
+              </Badge>
+            </div>
+            {onOpenTrade ? (
+              <Button type="button" variant="default" className="secondaryButton" onClick={onOpenTrade} leftSection={<Send size={16} />}>
+                去下单
+              </Button>
+            ) : null}
+            <IconButton label="刷新订单" onClick={() => loadOrders().catch(() => undefined)}>
+              <RefreshCw size={16} />
+            </IconButton>
+          </div>
+        }
+      />
+
+      {warning ? <Notice tone="danger">{warning}</Notice> : null}
+
+      <section className="ordersPanel history ordersPanelPage">
+        <PanelHeader icon={<Receipt size={17} />} title="本地订单记录" meta={`${orderPaging.total} 条`} />
+        <section className="tradeOrderControls" aria-label="订单记录筛选">
+          <TextInput
+            className="tradeOrderSearch"
+            leftSection={<Search size={15} aria-hidden="true" />}
+            value={orderSearch}
+            onChange={(event) => setOrderSearch(event.target.value)}
+            placeholder="搜索合约 / 订单号 / 错误信息"
+            aria-label="搜索订单记录"
+          />
+          <label className="tradeOrderSelect">
+            <span>合约</span>
+            <Select
+              aria-label="订单合约"
+              value={orderInstId || null}
+              onChange={(value) => setOrderInstId(value ?? "")}
+              data={instrumentOptions}
+              placeholder="全部合约"
+              searchable
+              clearable
+              size="xs"
+            />
+          </label>
+          <div className="signalLogMinimalFilter orderOriginFilter" aria-label="订单来源">
+            <Button type="button" variant="subtle" size="xs" className={orderOriginFilter === "" ? "selected" : ""} onClick={() => setOrderOriginFilter("")}>
+              全部来源
+              {orderOriginCounts.all ? <span className="orderOriginCount">{orderOriginCounts.all}</span> : null}
+            </Button>
+            <Button type="button" variant="subtle" size="xs" className={orderOriginFilter === "automation" ? "selected" : ""} onClick={() => setOrderOriginFilter("automation")}>
+              自动化
+              {orderOriginCounts.all ? <span className="orderOriginCount">{orderOriginCounts.automation}</span> : null}
+            </Button>
+            <Button type="button" variant="subtle" size="xs" className={orderOriginFilter === "manual" ? "selected" : ""} onClick={() => setOrderOriginFilter("manual")}>
+              手动
+              {orderOriginCounts.all ? <span className="orderOriginCount">{orderOriginCounts.manual}</span> : null}
+            </Button>
+          </div>
+          <label className="tradeOrderSelect">
+            <span>动作</span>
+            <Select aria-label="订单动作" value={orderActionFilter || "all"} onChange={(value) => setOrderActionFilter(value === "all" ? "" : value ?? "")}
+              data={orderRecordActions.map((item) => ({ value: item.key || "all", label: item.label }))} size="xs" />
+          </label>
+          <label className="tradeOrderSelect">
+            <span>状态</span>
+            <Select aria-label="订单状态" value={orderStateFilter || "all"} onChange={(value) => setOrderStateFilter(value === "all" ? "" : value ?? "")}
+              data={orderRecordStates.map((item) => ({ value: item.key || "all", label: item.label }))} size="xs" />
+          </label>
+        </section>
+        {orderPnlSummary && orderPnlSummary.closeCount > 0 ? (
+          <div className="orderPnlSummary" aria-label="本页盈亏汇总">
+            <span>
+              本页平仓盈亏合计
+              <strong className={pnlValueClass(orderPnlNumber(orderPnlSummary.pageRealizedTotal))}>
+                {formatOrderPnl(orderPnlSummary.pageRealizedTotal)} USDT
+              </strong>
+            </span>
+            <small>
+              {orderPnlSummary.pricedCloses}/{orderPnlSummary.closeCount} 笔平仓可计价
+              {orderPnlSummary.settledCloses ? ` · ${orderPnlSummary.settledCloses} 笔按 OKX 账单结算` : ""}
+              {" · 结算值含手续费；未结算的单据取平仓前持仓浮动盈亏估算"}
+            </small>
+          </div>
+        ) : null}
+
+        <section className="pendingOrdersPanel" aria-label="当前挂单">
+          <PanelHeader
+            icon={<ChartCandlestick size={17} />}
+            title="当前挂单"
+            meta={`${pendingOrders.length} 笔 · ${tradeSourceLabel(pendingSource)}`}
+          />
+          {pendingOrders.length === 0 ? (
+            <EmptyState compact>当前{environmentLabel(activeEnvironment)}没有可撤销的挂单</EmptyState>
+          ) : (
+            <div className="orderTable">
+              <DataTable className="orderHistoryTable pendingOrderTable">
+                <thead><tr><th>时间</th><th>合约 / 订单号</th><th>方向</th><th>价格</th><th>数量(张)</th><th>已成交</th><th>状态</th><th>操作</th></tr></thead>
+                <tbody>
+                  {pendingOrders.map((order, index) => {
+                    const orderKey = (order.ordId || order.clOrdId || `${order.instId}-${index}`) as string;
+                    const isCanceling = cancelingOrdId === orderKey;
+                    return (
+                      <tr key={orderKey}>
+                        <td>{formatTime(order.ctime)}</td>
+                        <td>
+                          <strong>{order.instId ?? "--"}</strong>
+                          <small title={order.clOrdId || order.ordId || ""}>ID {order.ordId || order.clOrdId || "--"}</small>
+                        </td>
+                        <td>{orderTradeDirectionLabel(order.side?.toLowerCase() ?? "", false)}</td>
+                        <td>{formatValue(order.px)}</td>
+                        <td>{formatValue(order.sz)}</td>
+                        <td>{formatValue(order.accFillSz ?? order.fillSz)}</td>
+                        <td>
+                          <span className={`orderStatus ${orderStateClass(order.state)}`}>
+                            <strong>{orderStateLabel(order.state)}</strong>
+                          </span>
+                        </td>
+                        <td>
+                          <Button
+                            color="red"
+                            variant="light"
+                            size="xs"
+                            type="button"
+                            disabled={isCanceling || switching}
+                            onClick={() => cancelPendingOrder(order)}
+                            aria-label={`撤销 ${order.instId ?? ""} 挂单 ${orderKey}`}
+                          >
+                            {isCanceling ? "撤销中" : "撤销"}
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </DataTable>
+            </div>
+          )}
+        </section>
+
+        <div className="orderTable">
+          <DataTable className="orderHistoryTable">
+            <thead><tr><th>时间</th><th>来源</th><th>动作</th><th>合约 / 订单号</th><th>方向</th><th>价格</th><th>数量(张)</th><th>盈亏</th><th>状态</th></tr></thead>
+            <tbody>
+              {orderEvents.map((event, index) => {
+                const pnlValue = orderPnlNumber(event.pnl_usd);
+                const pnlBasis = orderPnlBasisLabel(event.pnl_basis);
+                const orderRef = event.cl_ord_id || event.ord_id || "";
+                const isAutomation = event.origin === "automation";
+                return (
                   <tr key={`${event.ts}-${event.ord_id}-${event.cl_ord_id}-${index}`}>
                     <td>{formatTime(event.ts)}</td>
+                    <td className="orderOriginCell">
+                      <span className={`orderOriginTag ${isAutomation ? "automation" : "manual"}`}>
+                        {isAutomation ? "自动化" : "手动"}
+                      </span>
+                      <small title={event.close_strategy_id ? `该仓位由策略 #${event.close_strategy_id}${event.close_strategy_name ? `（${event.close_strategy_name}）` : ""} 开出，本次平仓由手动/接口发起` : undefined}>
+                        {isAutomation
+                          ? event.strategy_id
+                            ? `策略 #${event.strategy_id}${event.signal_id ? ` / 信号 #${event.signal_id}` : ""}`
+                            : "自动化策略"
+                          : event.close_strategy_id
+                            ? `平 策略 #${event.close_strategy_id} 仓`
+                            : "手动操作"}
+                      </small>
+                    </td>
                     <td>{orderActionLabel(event.action)}</td>
-                    <td>{event.inst_id ?? "--"}</td>
+                    <td>
+                      <strong>{event.inst_id ?? "--"}</strong>
+                      <small>{orderRef ? `ID ${orderRef}` : "无订单号"}</small>
+                    </td>
                     <td>{orderEventDirectionLabel(event)}</td>
                     <td>{formatValue(event.px)}</td>
                     <td>{formatValue(event.sz)}</td>
+                    <td className="orderPnlCell">
+                      {pnlValue === null ? (
+                        <span className="pnl-neutral" title={event.pnl_note || (event.action === "close-position" ? "该笔平仓没有可结算的 OKX 账单，也没有平仓前持仓快照，无法计算盈亏。" : "开仓与撤单不产生已实现盈亏。")}>—</span>
+                      ) : (
+                        <>
+                          <strong className={`${pnlValueClass(pnlValue)}${event.pnl_settled ? " orderPnlSettled" : ""}`}>
+                            {formatOrderPnl(event.pnl_usd)} USDT
+                          </strong>
+                          <small>
+                            {event.pnl_settled
+                              ? `毛 ${formatOrderPnl(event.pnl_gross)} / 手续费 ${formatOrderPnl(event.pnl_fee)}${event.bill_count ? ` · ${event.bill_count} 笔成交` : ""}`
+                              : formatOrderPnlPct(event.pnl_pct)}
+                            {pnlBasis ? ` · ${pnlBasis}` : ""}
+                          </small>
+                        </>
+                      )}
+                    </td>
                     <td><span className={`orderStatus ${orderStateClass(event.state)}`} title={orderEventMessage(event) || event.message || event.code || ""}>
                       <strong>{orderStateLabel(event.state)}</strong>
                       {orderEventMessage(event) ? <small>{orderEventMessage(event)}</small> : null}
                     </span></td>
                   </tr>
-                ))}
-              </tbody>
-            </DataTable>
-            {orderEvents.length === 0 ? <EmptyState>暂无符合条件的本地{environmentLabel(activeEnvironment)}订单记录</EmptyState> : null}
+                );
+              })}
+            </tbody>
+          </DataTable>
+          {orderEvents.length === 0 ? <EmptyState>暂无符合条件的本地{environmentLabel(activeEnvironment)}订单记录</EmptyState> : null}
+        </div>
+        <div className="paginationBar tradeOrderPagination">
+          <span>
+            第 {orderRangeStart}-{orderRangeEnd} 条 / 共 {orderPaging.total} 条
+          </span>
+          <label>
+            每页
+            <Select aria-label="每页订单数" value={String(orderPageSize)} onChange={(value) => value && setOrderPageSize(Number(value))}
+              data={orderRecordPageSizes.map((size) => ({ value: String(size), label: String(size) }))} size="xs" w={80} />
+          </label>
+          <div className="rowActions">
+            <Button className="rowAction" variant="default" size="xs" type="button" onClick={() => setOrderPageIndex(1)} disabled={orderCurrentPage <= 1}>
+              首页
+            </Button>
+            <Button variant="default" size="xs"
+              className="rowAction"
+              type="button"
+              onClick={() => setOrderPageIndex((value) => Math.max(1, value - 1))}
+              disabled={orderCurrentPage <= 1}
+            >
+              上一页
+            </Button>
+            <span className="pageIndex">{orderCurrentPage}/{orderPageCount}</span>
+            <Button variant="default" size="xs"
+              className="rowAction"
+              type="button"
+              onClick={() => setOrderPageIndex((value) => Math.min(orderPageCount, value + 1))}
+              disabled={orderCurrentPage >= orderPageCount}
+            >
+              下一页
+            </Button>
+            <Button variant="default" size="xs"
+              className="rowAction"
+              type="button"
+              onClick={() => setOrderPageIndex(orderPageCount)}
+              disabled={orderCurrentPage >= orderPageCount}
+            >
+              末页
+            </Button>
           </div>
-          <div className="paginationBar tradeOrderPagination">
-            <span>
-              第 {orderRangeStart}-{orderRangeEnd} 条 / 共 {orderPaging.total} 条
-            </span>
-            <label>
-              每页
-              <Select aria-label="每页订单数" value={String(orderPageSize)} onChange={(value) => value && setOrderPageSize(Number(value))}
-                data={orderRecordPageSizes.map((size) => ({ value: String(size), label: String(size) }))} size="xs" w={80} />
-            </label>
-            <div className="rowActions">
-              <Button className="rowAction" variant="default" size="xs" type="button" onClick={() => setOrderPageIndex(1)} disabled={orderCurrentPage <= 1}>
-                首页
-              </Button>
-              <Button variant="default" size="xs"
-                className="rowAction"
-                type="button"
-                onClick={() => setOrderPageIndex((value) => Math.max(1, value - 1))}
-                disabled={orderCurrentPage <= 1}
-              >
-                上一页
-              </Button>
-              <span className="pageIndex">{orderCurrentPage}/{orderPageCount}</span>
-              <Button variant="default" size="xs"
-                className="rowAction"
-                type="button"
-                onClick={() => setOrderPageIndex((value) => Math.min(orderPageCount, value + 1))}
-                disabled={orderCurrentPage >= orderPageCount}
-              >
-                下一页
-              </Button>
-              <Button variant="default" size="xs"
-                className="rowAction"
-                type="button"
-                onClick={() => setOrderPageIndex(orderPageCount)}
-                disabled={orderCurrentPage >= orderPageCount}
-              >
-                末页
-              </Button>
-            </div>
-          </div>
-        </section>
+        </div>
       </section>
     </section>
   );
+}
+
+function strategyInstrumentLabel(strategy: AutomationStrategy): string {
+  const ids = strategy.instIds?.length ? strategy.instIds : [strategy.inst_id];
+  return ids.length > 1 ? `${ids[0]} 等 ${ids.length} 个合约` : ids[0];
 }
 
 function strategyToForm(strategy: AutomationStrategy): AutomationStrategyForm {
   return {
     name: strategy.name,
     instId: strategy.inst_id,
+    instIds: strategy.instIds?.length ? strategy.instIds : [strategy.inst_id],
+    dailyPositionPct: strategy.dailyPositionPct ?? strategy.daily_position_pct ?? "0",
     bar: strategy.bar,
     template: strategy.template,
     executionMode: strategy.execution_mode,
@@ -9240,7 +10766,6 @@ function strategyToForm(strategy: AutomationStrategy): AutomationStrategyForm {
     sz: strategy.sz,
     fastWindow: String(strategy.fast_window),
     slowWindow: String(strategy.slow_window),
-    maxOrderContracts: strategy.max_order_contracts,
     maxPositionContracts: strategy.max_position_contracts,
     cooldownSeconds: String(strategy.cooldown_seconds),
     takeProfitPct: strategy.take_profit_pct ?? "0",
@@ -9252,7 +10777,9 @@ function automationFormPayload(form: AutomationStrategyForm, enabled = false) {
   return {
     name: form.name.trim(),
     enabled,
-    instId: form.instId.trim().toUpperCase(),
+    instId: (form.instIds[0] || form.instId).trim().toUpperCase(),
+    instIds: form.instIds.map((item) => item.trim().toUpperCase()).filter(Boolean),
+    dailyPositionPct: form.dailyPositionPct.trim() || "0",
     bar: form.bar,
     template: form.template,
     executionMode: form.executionMode,
@@ -9261,7 +10788,9 @@ function automationFormPayload(form: AutomationStrategyForm, enabled = false) {
     sz: form.sz.trim(),
     fastWindow: Number(form.fastWindow),
     slowWindow: Number(form.slowWindow),
-    maxOrderContracts: form.maxOrderContracts.trim(),
+    // 单笔上限恒等于固定下单张数（后端保存时强制 sz <= maxOrderContracts）。
+    // 表单不再暴露这个冗余输入，提交时直接由 sz 派生，避免填出无效组合。
+    maxOrderContracts: form.sz.trim() || "1",
     maxPositionContracts: form.maxPositionContracts.trim(),
     cooldownSeconds: Number(form.cooldownSeconds),
     takeProfitPct: form.takeProfitPct.trim() || "0",
@@ -9269,9 +10798,21 @@ function automationFormPayload(form: AutomationStrategyForm, enabled = false) {
   };
 }
 
+function FieldHint({ text, label }: { text: React.ReactNode; label: string }) {
+  return (
+    <Tooltip label={text} multiline w={300} withArrow position="top-start" openDelay={100} withinPortal>
+      <span className="fieldHintIcon" role="img" tabIndex={0} aria-label={label} title="">
+        i
+      </span>
+    </Tooltip>
+  );
+}
+
 function CleanAutomationPage({
   initialInstId = "BTC-USDT-SWAP",
   initialEditStrategyId = null,
+  initialCreate = false,
+  onCreateConsumed,
   onEditConsumed,
   onOpenStrategies,
   onOpenSignals,
@@ -9280,6 +10821,8 @@ function CleanAutomationPage({
 }: {
   initialInstId?: string;
   initialEditStrategyId?: number | null;
+  initialCreate?: boolean;
+  onCreateConsumed?: () => void;
   onEditConsumed?: () => void;
   onOpenStrategies: () => void;
   onOpenSignals: () => void;
@@ -9294,12 +10837,22 @@ function CleanAutomationPage({
   const [form, setForm] = React.useState<AutomationStrategyForm>(defaultAutomationForm);
   const [status, setStatus] = React.useState("加载中");
   const [view, setView] = React.useState<"overview" | "strategy" | "create">("overview");
+  // 处于「新建」流程时禁止自动选中已有策略，否则空白表单会被第一条策略覆盖。
+  const createIntentRef = React.useRef(false);
   const [riskPreview, setRiskPreview] = React.useState<AutomationRiskPreview | null>(null);
   const [riskStatus, setRiskStatus] = React.useState("等待检查");
   const [riskLoading, setRiskLoading] = React.useState(false);
+  const [showPassedChecks, setShowPassedChecks] = React.useState(false);
+  const [loadError, setLoadError] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [saveNotice, setSaveNotice] = React.useState("");
+  const [customInstId, setCustomInstId] = React.useState("");
+  // 合约是低频设置：默认折叠成一行摘要，点「修改」再展开快捷选择与输入框。
+  const [instEditorOpen, setInstEditorOpen] = React.useState(false);
   const [updatedAt, setUpdatedAt] = React.useState<number | null>(null);
+  const [automationEquity, setAutomationEquity] = React.useState<AutomationEquity | null>(null);
+  const [equityLoading, setEquityLoading] = React.useState(false);
+  const [equityError, setEquityError] = React.useState("");
 
   const selectedStrategy = React.useMemo(
     () => strategies.find((item) => item.id === selectedId) ?? null,
@@ -9311,15 +10864,43 @@ function CleanAutomationPage({
   const submittedSignals = signals.filter((item) => item.decision === "submitted").length;
   const riskChecks = riskPreview?.checks ?? [];
   const blockingCheck = riskChecks.find((item) => item.status === "block");
-  const visibleRiskChecks = [
-    ...riskChecks.filter((item) => item.status === "block"),
-    ...riskChecks.filter((item) => item.status !== "block")
-  ].slice(0, 4);
-  const decisionTone = riskPreview?.allowed ? "ok" : blockingCheck ? "block" : "warn";
-  const decisionTitle = riskPreview?.allowed ? "可以自动下单" : blockingCheck ? "暂不能自动下单" : "当前只会记录信号";
-  const decisionMessage = riskPreview?.message || blockingCheck?.message || riskStatus;
-  const hasExitRisk = Number(form.takeProfitPct) > 0 || Number(form.stopLossPct) > 0;
-  const exitRiskOnlyRecords = hasExitRisk && form.executionMode === "signal_only";
+  const blockingChecks = riskChecks.filter((item) => item.status === "block");
+  const warningChecks = riskChecks.filter((item) => item.status === "warn");
+  const passedChecks = riskChecks.filter((item) => item.status !== "block" && item.status !== "warn");
+  const hasStrategies = strategies.length > 0;
+  const hasEnabledStrategy = strategies.some((item) => item.enabled);
+  const hasUnconfirmedAlerts = alerts.some((item) => item.active);
+  // 引擎在 simulated_auto 模式下会于模拟盘自动下单；没有策略时不能沿用"只记录信号"之类结论。
+  const decisionTone = hasStrategies ? (riskPreview?.allowed ? "ok" : blockingCheck ? "block" : "warn") : "warn";
+  const decisionTitle = !hasStrategies
+    ? "尚未创建策略"
+    : riskPreview?.allowed
+      ? "可以自动下单"
+      : blockingCheck
+        ? "暂不能自动下单"
+        : riskPreview
+          ? "当前只记录信号"
+          : "启用检查未完成";
+  const decisionMessage = !hasStrategies
+    ? "引擎正在运行，但当前没有策略会产生信号。创建并启用策略后，才会按风控规则在模拟盘自动执行；实盘始终隔离。"
+    : riskPreview?.message || blockingCheck?.message || riskStatus;
+  const equityPct = Number(form.dailyPositionPct);
+  const hasEquityPct = Number.isFinite(equityPct) && equityPct > 0 && equityPct <= 100;
+  const equityHint = equityLoading && !automationEquity
+    ? "正在读取模拟盘账户金额…"
+    : equityError || (!automationEquity
+      ? "账户金额尚未读取"
+      : automationEquity.available
+        ? ""
+        : automationEquity.message || "模拟盘账户金额不可用，启用每日仓位% 后开仓会被拦截");
+  const equityHintTone = equityError || automationEquity?.available === false ? "warn" : "muted";
+  // 「只提醒」只记录信号不下单，引擎也不会检查止盈止损（automation_exit_signal 仅对
+  // simulated_auto 生效），因此这两项在只提醒模式下必须禁用并说明，否则会误导。
+  const exitsDisabled = form.executionMode !== "simulated_auto";
+  const barIntervalLabel = automationBarOptions.find((item) => item.key === form.bar)?.label ?? form.bar;
+  const barCadence = automationBarCadence[form.bar] ?? { cadence: "按周期", perDay: 0 };
+  const strategyContractCount = Math.max(1, form.instIds.length);
+  const dailyEvalLimit = barCadence.perDay * strategyContractCount;
   const saveStateText = selectedStrategy
     ? selectedStrategy.enabled
       ? "已启动，保存后继续运行"
@@ -9327,6 +10908,21 @@ function CleanAutomationPage({
     : "新策略默认先保存为暂停";
 
   const checkTone = (value?: string) => value === "pass" ? "ok" : value === "block" ? "block" : "warn";
+  const renderRiskGroup = (label: string, items: AutomationRiskCheck[]) => (
+    <div className="automationCheckGroup" key={label}>
+      <div className="automationCheckGroupLabel">{label} · {items.length} 项</div>
+      {items.map((item) => (
+        <div className="cleanListRow" key={item.key}>
+          <span className={`cleanStatusDot ${checkTone(item.status)}`} />
+          <div>
+            <strong>{item.label}</strong>
+            <small title={item.message}>{item.message}</small>
+          </div>
+          <Badge className={`cleanTag ${checkTone(item.status)}`}>{riskStatusLabel(item.status)}</Badge>
+        </div>
+      ))}
+    </div>
+  );
   const decisionToneForSignal = (decision?: string) => {
     const klass = automationDecisionClass(decision);
     if (klass === "down") return "block";
@@ -9339,21 +10935,62 @@ function CleanAutomationPage({
     setForm((current) => ({ ...current, [key]: value }));
   };
 
+  const setInstIds = (next: string[]) => {
+    const normalized = Array.from(new Set(next.map((item) => item.trim().toUpperCase()).filter(Boolean))).slice(0, MAX_AUTOMATION_INST_IDS);
+    if (!normalized.length) {
+      setStatus("请至少保留一个合约");
+      return;
+    }
+    setSaveNotice("");
+    setStatus("");
+    setForm((current) => ({ ...current, instIds: normalized, instId: normalized[0] }));
+  };
+
+  const addCustomInstrument = () => {
+    const value = customInstId.trim().toUpperCase();
+    if (!value) return;
+    if (!value.endsWith("-SWAP")) {
+      setStatus("合约代码需以 -SWAP 结尾，例如 ETH-USDT-SWAP");
+      return;
+    }
+    if (form.instIds.includes(value)) {
+      setCustomInstId("");
+      return;
+    }
+    if (form.instIds.length >= MAX_AUTOMATION_INST_IDS) {
+      setStatus(`一条策略最多选择 ${MAX_AUTOMATION_INST_IDS} 个合约`);
+      return;
+    }
+    setInstIds([...form.instIds, value]);
+    setCustomInstId("");
+  };
+
+  const togglePopularInstrument = (value: string) => {
+    setInstIds(
+      form.instIds.includes(value)
+        ? form.instIds.filter((item) => item !== value)
+        : [...form.instIds, value]
+    );
+  };
+
   React.useEffect(() => {
     const normalized = initialInstId.trim().toUpperCase();
-    if (normalized.endsWith("-SWAP")) {
-      setForm((current) => (current.instId.toUpperCase() === normalized ? current : { ...current, instId: normalized }));
-    }
+    if (!normalized.endsWith("-SWAP")) return;
+    setForm((current) => {
+      if (current.instIds.length > 1) return current;
+      if (current.instIds[0] === normalized && current.instId === normalized) return current;
+      return { ...current, instId: normalized, instIds: [normalized] };
+    });
   }, [initialInstId]);
 
   const updateOrderContracts = (value: string) => {
     setForm((current) => {
       const next = { ...current, sz: value };
       const numeric = Number(value);
+      // 最多持仓是真实生效的累计约束：调大每次下单时同步抬高，避免保存成功
+      // 却每轮都被「持仓上限」拦截。单笔上限已由 sz 派生，不再需要联动。
       if (Number.isFinite(numeric) && numeric > 0) {
-        const maxOrder = Number(current.maxOrderContracts);
         const maxPosition = Number(current.maxPositionContracts);
-        if (!Number.isFinite(maxOrder) || maxOrder < numeric) next.maxOrderContracts = value;
         if (!Number.isFinite(maxPosition) || maxPosition < numeric) next.maxPositionContracts = value;
       }
       return next;
@@ -9366,28 +11003,35 @@ function CleanAutomationPage({
   }), [form, selectedStrategy]);
 
   const loadAutomation = React.useCallback(async () => {
-    const [strategyResponse, signalResponse, alertResponse, statusResponse] = await Promise.all([
-      fetch(`${API_BASE}/api/automation/strategies`),
-      fetch(`${API_BASE}/api/automation/signals?limit=100`),
-      fetch(`${API_BASE}/api/automation/alerts?limit=20`),
-      fetch(`${API_BASE}/api/automation/status`)
-    ]);
-    if (!strategyResponse.ok || !signalResponse.ok || !alertResponse.ok || !statusResponse.ok) {
-      setStatus("自动交易接口异常");
-      return;
+    try {
+      const [strategyResponse, signalResponse, alertResponse, statusResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/automation/strategies`),
+        fetch(`${API_BASE}/api/automation/signals?limit=100`),
+        fetch(`${API_BASE}/api/automation/alerts?limit=20`),
+        fetch(`${API_BASE}/api/automation/status`)
+      ]);
+      if (!strategyResponse.ok || !signalResponse.ok || !alertResponse.ok || !statusResponse.ok) {
+        throw new Error("接口返回异常");
+      }
+      const strategyPayload = await strategyResponse.json();
+      const signalPayload = await signalResponse.json();
+      const alertPayload = await alertResponse.json();
+      const statusPayload = await statusResponse.json();
+      const rows: AutomationStrategy[] = strategyPayload.data ?? [];
+      setStrategies(rows);
+      setSignals(signalPayload.data ?? []);
+      setAlerts(alertPayload.data ?? []);
+      setAutomationStatus(statusPayload);
+      if (!createIntentRef.current) {
+        setSelectedId((current) => current ?? rows.find((item) => item.enabled)?.id ?? rows[0]?.id ?? null);
+      }
+      setUpdatedAt(Date.now());
+      setLoadError("");
+      setStatus("自动交易数据已更新");
+    } catch {
+      setLoadError("自动交易数据未能加载，页面内容可能不是最新。请点击「重试」重新读取；若持续失败，请检查后端服务是否正常。");
+      setStatus("自动交易数据加载失败");
     }
-    const strategyPayload = await strategyResponse.json();
-    const signalPayload = await signalResponse.json();
-    const alertPayload = await alertResponse.json();
-    const statusPayload = await statusResponse.json();
-    const rows: AutomationStrategy[] = strategyPayload.data ?? [];
-    setStrategies(rows);
-    setSignals(signalPayload.data ?? []);
-    setAlerts(alertPayload.data ?? []);
-    setAutomationStatus(statusPayload);
-    setSelectedId((current) => current ?? rows.find((item) => item.enabled)?.id ?? rows[0]?.id ?? null);
-    setUpdatedAt(Date.now());
-    setStatus("自动交易数据已更新");
   }, []);
 
   const loadRiskPreview = React.useCallback(async () => {
@@ -9402,13 +11046,41 @@ function CleanAutomationPage({
       if (!response.ok) throw new Error(payload.detail ?? "启用检查失败");
       setRiskPreview(payload.data as AutomationRiskPreview);
       setRiskStatus("启用检查已更新");
-    } catch (error) {
+    } catch {
       setRiskPreview(null);
-      setRiskStatus(error instanceof Error ? error.message : "启用检查失败");
+      setRiskStatus("启用检查未能完成，页面不会据此判断能否下单。请点击「重试」；若持续失败，请检查后端服务与模拟盘凭证。");
     } finally {
       setRiskLoading(false);
     }
   }, [automationPayload]);
+
+  // 每日仓位% 的金额口径必须与后端风控一致，因此只读 /api/automation/equity（模拟盘）。
+  // 输入做 debounce，且只在创建/编辑视图请求，避免总览页产生无谓的账户请求。
+  const loadAutomationEquity = React.useCallback(async (force = false) => {
+    setEquityLoading(true);
+    try {
+      const params = new URLSearchParams({
+        dailyPositionPct: form.dailyPositionPct.trim() || "0",
+        strategyId: String(selectedStrategy?.id ?? 0)
+      });
+      if (force) params.set("force", "true");
+      const response = await fetch(`${API_BASE}/api/automation/equity?${params.toString()}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail ?? "账户金额读取失败");
+      setAutomationEquity(payload.data as AutomationEquity);
+      setEquityError("");
+    } catch {
+      setEquityError("模拟盘账户金额未能读取，启用每日仓位% 后风控会按不可用处理并拦截开仓。");
+    } finally {
+      setEquityLoading(false);
+    }
+  }, [form.dailyPositionPct, selectedStrategy?.id]);
+
+  React.useEffect(() => {
+    if (view !== "create") return;
+    const timer = window.setTimeout(() => { void loadAutomationEquity(); }, 300);
+    return () => window.clearTimeout(timer);
+  }, [view, loadAutomationEquity]);
 
   const pauseAutomation = async () => {
     setSaving(true);
@@ -9523,6 +11195,7 @@ function CleanAutomationPage({
       if (!response.ok) throw new Error(payload.detail ?? "策略保存失败");
       const savedStrategy = payload.data as AutomationStrategy | undefined;
       const savedId = savedStrategy?.id ?? selectedId;
+      createIntentRef.current = false;
       setSelectedId(savedId);
       if (startAfterSave && savedId && !savedStrategy?.enabled) {
         const toggleResponse = await fetch(`${API_BASE}/api/automation/strategies/${savedId}/toggle`, {
@@ -9550,6 +11223,7 @@ function CleanAutomationPage({
   };
 
   const editStrategy = (strategy: AutomationStrategy) => {
+    createIntentRef.current = false;
     setSelectedId(strategy.id);
     setForm(strategyToForm(strategy));
     setView("create");
@@ -9590,10 +11264,18 @@ function CleanAutomationPage({
   };
 
   const resetForCreate = () => {
+    createIntentRef.current = true;
     setSelectedId(null);
     setForm(defaultAutomationForm);
     setView("create");
   };
+
+  React.useEffect(() => {
+    if (!initialCreate) return;
+    resetForCreate();
+    onCreateConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCreate, onCreateConsumed]);
 
   return (
     <section className="automationPage cleanAutomationPage">
@@ -9606,25 +11288,29 @@ function CleanAutomationPage({
         </div>
         <div className="workspaceActions">
           <div className="statusPills" aria-label="自动交易状态">
-            <Badge className={`statusPill ${cleanAutomationRealtime.connected ? "live" : "warning"}`}>
-              {cleanAutomationRealtime.connected ? "实时通道" : "REST 回退"}
-            </Badge>
             <Badge className={`statusPill ${automationStatus?.running ? "live" : "warning"}`}>
               引擎{automationStatus?.running ? "运行中" : "未运行"}
             </Badge>
-            <Badge className={`statusPill ${automationStatus?.globalPaused || automationStatus?.circuitBreakerActive ? "warning" : "live"}`}>
-              {automationGlobalStateLabel(automationStatus)}
-            </Badge>
-            <Badge className="statusPill">启用 {automationStatus?.enabledCount ?? 0}/{automationStatus?.strategyCount ?? 0}</Badge>
-            <Badge className="statusPill">告警 {automationStatus?.alertCount ?? 0}</Badge>
-            <Badge className="statusPill">严重 {automationStatus?.criticalAlertCount ?? 0}</Badge>
-            <Badge className={`statusPill ${decisionTone === "block" ? "warning" : "live"}`}>{decisionTitle}</Badge>
+            {automationStatus?.globalStateAvailable === false || automationStatus?.globalPaused || automationStatus?.circuitBreakerActive ? (
+              <Badge className="statusPill warning">{automationGlobalStateLabel(automationStatus)}</Badge>
+            ) : null}
+            {(automationStatus?.alertCount ?? 0) > 0 ? (
+              <Badge className="statusPill warning">告警 {automationStatus?.alertCount}</Badge>
+            ) : null}
           </div>
           <Button variant="default" size="xs" className="secondaryButton slim" type="button" onClick={pauseAutomation} disabled={saving || Boolean(automationStatus?.globalPaused)}>
             <Pause size={15} aria-hidden="true" />
             暂停
           </Button>
-          <Button variant="default" size="xs" className="secondaryButton slim" type="button" onClick={resumeAutomation} disabled={saving || (!automationStatus?.globalPaused && !automationStatus?.circuitBreakerActive)}>
+          <Button
+            variant="default"
+            size="xs"
+            className="secondaryButton slim"
+            type="button"
+            onClick={resumeAutomation}
+            disabled={saving || (!automationStatus?.globalPaused && !automationStatus?.circuitBreakerActive)}
+            title={!automationStatus?.globalPaused && !automationStatus?.circuitBreakerActive ? "仅在全局暂停或熔断后需要人工恢复" : undefined}
+          >
             <Play size={15} aria-hidden="true" />
             恢复
           </Button>
@@ -9641,22 +11327,40 @@ function CleanAutomationPage({
       </div>
 
       {automationStatus?.warning ? <Notice tone="warning">{automationStatus.warning}</Notice> : null}
-
-      <Tabs className="cleanAutomationTabs" value={view} onChange={(value) => value && setView(value as "overview" | "strategy" | "create")} aria-label="自动交易视图">
-        <Tabs.List>
-          <Tabs.Tab value="overview">总览</Tabs.Tab>
-          <Tabs.Tab value="strategy">策略</Tabs.Tab>
-          <Tabs.Tab value="create">{selectedStrategy ? "编辑" : "创建"}</Tabs.Tab>
-        </Tabs.List>
-      </Tabs>
+      {automationStatus?.globalStateAvailable === false && automationStatus?.pauseReason ? (
+        <Notice tone="warning">{automationStatus.pauseReason}</Notice>
+      ) : null}
+      {loadError ? (
+        <Notice tone="warning">
+          <span>{loadError}</span>
+          <Button variant="subtle" size="xs" className="rowAction" type="button" onClick={() => { void loadAutomation(); void loadRiskPreview(); }}>重试</Button>
+        </Notice>
+      ) : null}
 
       {view === "overview" ? (
         <section className="cleanAutomationView">
           <section className={`cleanDecisionPanel ${decisionTone}`}>
             <div>
-              <span className="eyebrow">当前结论</span>
               <h2>{decisionTitle}</h2>
               <p>{decisionMessage}</p>
+              {!hasEnabledStrategy ? (
+                <div className="cleanDecisionHint">
+                  <span>
+                    {hasStrategies
+                      ? `${strategies.length} 条策略都处于暂停，启用后才会产生信号。`
+                      : "还没有策略，先创建一条。"}
+                  </span>
+                  <Button
+                    variant="subtle"
+                    size="xs"
+                    className="secondaryButton"
+                    type="button"
+                    onClick={hasStrategies ? onOpenStrategies : resetForCreate}
+                  >
+                    {hasStrategies ? "查看策略" : "创建策略"}
+                  </Button>
+                </div>
+              ) : null}
             </div>
             <div className="cleanInlineMetrics" aria-label="自动交易关键指标">
               <div className="cleanInlineMetric">
@@ -9668,14 +11372,51 @@ function CleanAutomationPage({
                 <strong className={latestSignal ? automationActionClass(latestSignal.action) : ""}>{latestSignal ? automationActionLabel(latestSignal.action) : "--"}</strong>
               </div>
               <div className="cleanInlineMetric">
-                <span>检查间隔</span>
-                <strong>{automationStatus?.intervalSeconds ? `${automationStatus.intervalSeconds} 秒` : "--"}</strong>
-              </div>
-              <div className="cleanInlineMetric">
                 <span>今日提交</span>
                 <strong>{submittedSignals}</strong>
               </div>
             </div>
+          </section>
+
+          <section className="cleanPanel">
+            <PanelHeader
+              icon={<Bot size={17} />}
+              title="活跃策略"
+              meta={activeStrategy ? `#${activeStrategy.id}` : "暂无"}
+              action={
+                <Group gap={6} className="strategyHeaderActions">
+                  <Button className="primaryButton" size="xs" type="button" onClick={resetForCreate}>新建策略</Button>
+                  <Button variant="subtle" size="xs" className="secondaryButton" type="button" onClick={onOpenStrategies}>全部策略</Button>
+                </Group>
+              }
+            />
+            {activeStrategy ? (
+              <div className="cleanStrategyDetail">
+                <div className="cleanStrategyHead">
+                  <div className="cleanStrategyTitle">
+                    <strong title={activeStrategy.name}>{activeStrategy.name}</strong>
+                    <Badge className={`statusPill ${activeStrategy.enabled ? "live" : "warning"}`}>{automationEnabledLabel(activeStrategy.enabled)}</Badge>
+                  </div>
+                  <span className="cleanStrategyMeta">
+                    {strategyInstrumentLabel(activeStrategy)} · {automationBarLabel(activeStrategy.bar)} · {automationTemplateLabel(activeStrategy.template)} · {automationExecutionModeLabel(activeStrategy.execution_mode)}
+                    {` · 每次 ${formatValue(activeStrategy.sz)} 张 · 持仓上限 ${formatValue(activeStrategy.max_position_contracts)} 张 · 止盈/止损 ${formatValue(activeStrategy.take_profit_pct ?? "0")}% / ${formatValue(activeStrategy.stop_loss_pct ?? "0")}%`}
+                  </span>
+                </div>
+                <div className="cleanActionRow">
+                  <Button variant="default" className="secondaryButton" type="button" onClick={() => editStrategy(activeStrategy)} disabled={saving}>编辑策略</Button>
+                  <Button variant="default" className="secondaryButton" type="button" onClick={() => runStrategy(activeStrategy)} disabled={saving}>
+                    <Play size={13} />
+                    运行一次
+                  </Button>
+                  <Button className="primaryButton" type="button" onClick={() => toggleStrategy(activeStrategy)} disabled={saving}>
+                    {activeStrategy.enabled ? <Pause size={13} /> : <Play size={13} />}
+                    {activeStrategy.enabled ? "暂停" : "启动"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <EmptyState>暂无策略，先创建第一条自动交易策略</EmptyState>
+            )}
           </section>
 
           <section className="cleanAutomationGrid">
@@ -9684,41 +11425,56 @@ function CleanAutomationPage({
                 <PanelHeader
                   icon={<ShieldCheck size={17} />}
                   title="启用检查"
-                  meta={blockingCheck ? "有阻塞" : riskPreview?.allowed ? "通过" : "观察"}
+                  meta={riskLoading ? "检查中" : !riskPreview ? "未完成" : blockingCheck ? "有阻塞" : riskPreview.allowed ? "通过" : `${riskChecks.length} 项`}
                   action={
                     <Button variant="subtle" size="xs" className="rowAction" type="button" onClick={blockingCheck?.key === "llm" ? onOpenLlm : loadRiskPreview} disabled={riskLoading}>
-                      {blockingCheck?.key === "llm" ? "去配置" : riskLoading ? "检查中" : "刷新"}
+                      {blockingCheck?.key === "llm" ? "去配置" : riskPreview ? "刷新" : "重试"}
                     </Button>
                   }
                 />
                 <div className="cleanList">
-                  {visibleRiskChecks.length ? (
-                    visibleRiskChecks.map((item) => (
-                      <div className="cleanListRow" key={item.key}>
-                        <span className={`cleanStatusDot ${checkTone(item.status)}`} />
-                        <div>
-                          <strong>{item.label}</strong>
-                          <small>{item.message}</small>
+                  {riskLoading && !riskPreview ? (
+                    <DataLoadingState label="正在检查启用条件" compact />
+                  ) : riskPreview ? (
+                    <>
+                      {blockingChecks.length ? renderRiskGroup("阻塞项", blockingChecks) : null}
+                      {warningChecks.length ? renderRiskGroup("需关注", warningChecks) : null}
+                      {passedChecks.length ? (
+                        <div className="automationCheckGroup">
+                          <Button
+                            variant="subtle"
+                            size="xs"
+                            className="rowAction automationCheckToggle"
+                            type="button"
+                            aria-expanded={showPassedChecks}
+                            onClick={() => setShowPassedChecks((current) => !current)}
+                          >
+                            {showPassedChecks ? "收起" : "展开"}已通过 {passedChecks.length} 项
+                          </Button>
+                          {showPassedChecks ? renderRiskGroup("已通过", passedChecks) : null}
                         </div>
-                        <Badge className={`cleanTag ${checkTone(item.status)}`}>{riskStatusLabel(item.status)}</Badge>
-                      </div>
-                    ))
+                      ) : null}
+                    </>
                   ) : (
-                    <EmptyState compact>{riskStatus}</EmptyState>
+                    <EmptyState compact className="automationEmptyState">
+                      <strong>启用检查未完成</strong>
+                      <small>{riskStatus}</small>
+                      <Button variant="subtle" size="xs" className="rowAction" type="button" onClick={loadRiskPreview}>重试</Button>
+                    </EmptyState>
                   )}
                 </div>
               </section>
 
-              <section className="cleanPanel automationAlertPanel">
-                <PanelHeader
-                  icon={<ShieldAlert size={17} />}
-                  title="最近告警"
-                  meta={`${recentAlerts.length}/${alerts.length}`}
-                  action={<Button variant="subtle" size="xs" className="rowAction" type="button" onClick={() => loadAutomation().catch(() => setStatus("自动交易数据加载失败"))}>刷新</Button>}
-                />
-                <div className="cleanList">
-                  {recentAlerts.length ? (
-                    recentAlerts.map((alert) => (
+              {recentAlerts.length ? (
+                <section className="cleanPanel automationAlertPanel">
+                  <PanelHeader
+                    icon={<ShieldAlert size={17} />}
+                    title="最近告警"
+                    meta={`${recentAlerts.length}/${alerts.length}`}
+                    action={<Button variant="subtle" size="xs" className="rowAction" type="button" onClick={() => loadAutomation().catch(() => setStatus("自动交易数据加载失败"))}>刷新</Button>}
+                  />
+                  <div className="cleanList">
+                    {recentAlerts.map((alert) => (
                       <div className="cleanListRow automationAlertRow" key={alert.id}>
                         <span className={`cleanStatusDot ${automationAlertSeverityClass(alert.severity)}`} />
                         <div>
@@ -9739,12 +11495,10 @@ function CleanAutomationPage({
                           ) : null}
                         </span>
                       </div>
-                    ))
-                  ) : (
-                    <EmptyState compact>暂无未确认告警</EmptyState>
-                  )}
-                </div>
-              </section>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
             </div>
 
             <section className="cleanPanel">
@@ -9755,19 +11509,25 @@ function CleanAutomationPage({
                 action={<Button variant="subtle" size="xs" className="rowAction" type="button" onClick={onOpenSignals}>日志</Button>}
               />
               <div className="cleanList">
-                {signals.slice(0, 4).length ? (
-                  signals.slice(0, 4).map((signal) => (
+                {signals.slice(0, 5).length ? (
+                  signals.slice(0, 5).map((signal) => (
                     <div className="cleanListRow" key={signal.id}>
                       <span className={`cleanStatusDot ${decisionToneForSignal(signal.decision)}`} />
                       <div>
                         <strong>{signal.inst_id} {automationActionLabel(signal.action)}</strong>
-                        <small title={signal.message || signal.reason || formatTime(signal.ts)}>{signal.message || signal.reason || formatTime(signal.ts)}</small>
+                        <small title={signal.message || signal.reason || formatTime(signal.ts)}>
+                          {signal.message || signal.reason || formatTime(signal.ts)} · {formatClockSecond(signal.ts)}
+                        </small>
                       </div>
                       <Badge className={`cleanTag ${decisionToneForSignal(signal.decision)}`}>{automationDecisionLabel(signal.decision)}</Badge>
                     </div>
                   ))
                 ) : (
-                  <EmptyState compact>暂无策略信号</EmptyState>
+                  <EmptyState compact className="automationEmptyState">
+                    <strong>还没有策略信号</strong>
+                    <small>{hasStrategies ? "策略启用后，每次运行都会在这里记录信号、风控拦截与下单结果。" : "创建并启用策略后，每次运行都会在这里留下记录。"}</small>
+                    <Button variant="subtle" size="xs" className="rowAction" type="button" onClick={onOpenSignals}>查看全部日志</Button>
+                  </EmptyState>
                 )}
               </div>
             </section>
@@ -9775,105 +11535,226 @@ function CleanAutomationPage({
         </section>
       ) : null}
 
-      {view === "strategy" ? (
-        <section className="cleanAutomationView">
-          <section className="cleanPanel">
-            <PanelHeader
-              icon={<Bot size={17} />}
-              title="活跃策略"
-              meta={activeStrategy ? automationEnabledLabel(activeStrategy.enabled) : "暂无"}
-              action={<Button variant="subtle" size="xs" className="rowAction" type="button" onClick={onOpenStrategies}>全部策略</Button>}
-            />
-            {activeStrategy ? (
-              <div className="cleanStrategyDetail">
-                <div className="cleanStrategyHero">
-                  <div>
-                    <strong>{activeStrategy.name}</strong>
-                    <span>{activeStrategy.inst_id} · {activeStrategy.bar} · {automationTemplateLabel(activeStrategy.template)} · {automationExecutionModeLabel(activeStrategy.execution_mode)}</span>
-                  </div>
-                  <Badge className={`statusPill ${activeStrategy.enabled ? "live" : "warning"}`}>{automationEnabledLabel(activeStrategy.enabled)}</Badge>
-                </div>
-                <div className="cleanMetricStrip compact">
-                  <Metric label="最近信号" value={latestSignal ? automationActionLabel(latestSignal.action) : "--"} valueClass={latestSignal ? automationActionClass(latestSignal.action) : ""} />
-                  <Metric label="每次下单" value={`${formatValue(activeStrategy.sz)} 张`} />
-                  <Metric label="持仓上限" value={`${formatValue(activeStrategy.max_position_contracts)} 张`} />
-                  <Metric label="止盈/止损" value={`${formatValue(activeStrategy.take_profit_pct ?? "0")}% / ${formatValue(activeStrategy.stop_loss_pct ?? "0")}%`} />
-                </div>
-                <div className="cleanActionRow">
-                  <Button variant="default" className="secondaryButton" type="button" onClick={() => editStrategy(activeStrategy)} disabled={saving}>编辑策略</Button>
-                  <Button variant="default" className="secondaryButton" type="button" onClick={() => runStrategy(activeStrategy)} disabled={saving}>
-                    <Play size={13} />
-                    运行一次
-                  </Button>
-                  <Button className="primaryButton" type="button" onClick={() => toggleStrategy(activeStrategy)} disabled={saving}>
-                    {activeStrategy.enabled ? <Pause size={13} /> : <Play size={13} />}
-                    {activeStrategy.enabled ? "暂停" : "启动"}
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <EmptyState>暂无策略，先创建第一条自动交易策略</EmptyState>
-            )}
-          </section>
-        </section>
-      ) : null}
-
       {view === "create" ? (
-        <section className="cleanAutomationView">
+        <section className="cleanAutomationView cleanAutomationEditor">
           <section className="cleanPanel">
             <PanelHeader
               icon={<Bot size={17} />}
               title={selectedStrategy ? "编辑策略" : "创建策略"}
               meta={riskPreview?.allowed ? "可启用" : "需检查"}
-              action={<Button variant="subtle" size="xs" className="rowAction" type="button" onClick={resetForCreate} disabled={saving}>新建</Button>}
+              action={
+                <Group gap={6}>
+                  <Button variant="subtle" size="xs" className="secondaryButton" type="button" onClick={onOpenStrategies} disabled={saving}>返回策略</Button>
+                  <Button variant="subtle" size="xs" className="secondaryButton" type="button" onClick={resetForCreate} disabled={saving}>新建</Button>
+                </Group>
+              }
             />
             <div className="cleanStrategyForm">
-              <label className="fieldBlock">
+              <label className="fieldBlock automationNameField">
                 <span>策略名称</span>
                 <TextInput value={form.name} onChange={(event) => updateForm("name", event.target.value)} />
               </label>
-              <label className="fieldBlock">
-                <span>合约</span>
-                <TextInput value={form.instId} onChange={(event) => updateForm("instId", event.target.value.toUpperCase())} />
-              </label>
-              <label className="fieldBlock">
-                <span>判断方式</span>
-                <Select value={form.template} onChange={(value) => value && updateForm("template", value)} data={automationTemplateOptions.map((item) => ({ value: item.key, label: item.label }))} />
-              </label>
-              <label className="fieldBlock">
-                <span>执行方式</span>
-                <Select value={form.executionMode} onChange={(value) => value && updateForm("executionMode", value)} data={automationExecutionModeOptions.map((item) => ({ value: item.key, label: item.label }))} />
-              </label>
-              <label className="fieldBlock">
-                <span>周期</span>
-                <Select value={form.bar} onChange={(value) => value && updateForm("bar", value)} data={automationBarOptions.map((item) => ({ value: item.key, label: item.label }))} />
-              </label>
-              <label className="fieldBlock">
-                <span>每次下单</span>
-                <TextInput inputMode="decimal" value={form.sz} onChange={(event) => updateOrderContracts(event.target.value)} />
-              </label>
-              <label className="fieldBlock">
-                <span>单笔上限</span>
-                <TextInput inputMode="decimal" value={form.maxOrderContracts} onChange={(event) => updateForm("maxOrderContracts", event.target.value)} />
-              </label>
-              <label className="fieldBlock">
-                <span>最多持仓</span>
-                <TextInput inputMode="decimal" value={form.maxPositionContracts} onChange={(event) => updateForm("maxPositionContracts", event.target.value)} />
-              </label>
-              <label className="fieldBlock">
-                <span>止盈%</span>
-                <TextInput inputMode="decimal" value={form.takeProfitPct} onChange={(event) => updateForm("takeProfitPct", event.target.value)} />
-              </label>
-              <label className="fieldBlock">
-                <span>止损%</span>
-                <TextInput inputMode="decimal" value={form.stopLossPct} onChange={(event) => updateForm("stopLossPct", event.target.value)} />
+              <div className="fieldBlock automationInstrumentField">
+                <span id="automationInstrumentLabel">
+                  合约 · 已选 {form.instIds.length}/{MAX_AUTOMATION_INST_IDS}
+                  <Button
+                    variant="subtle"
+                    size="xs"
+                    className="automationInstrumentToggle"
+                    type="button"
+                    onClick={() => setInstEditorOpen((value) => !value)}
+                    aria-expanded={instEditorOpen}
+                  >
+                    {instEditorOpen ? "收起" : "修改"}
+                  </Button>
+                </span>
+                <div className="automationInstrumentChips" role="group" aria-labelledby="automationInstrumentLabel">
+                  {form.instIds.length ? form.instIds.map((item) => (
+                    <UnstyledButton
+                      key={item}
+                      type="button"
+                      className="automationInstrumentChip selected"
+                      aria-pressed={true}
+                      aria-label={`移除合约 ${item}`}
+                      title={`移除 ${item}`}
+                      onClick={() => setInstIds(form.instIds.filter((value) => value !== item))}
+                    >
+                      {item}<span aria-hidden="true">×</span>
+                    </UnstyledButton>
+                  )) : <span className="automationInstrumentEmpty">尚未选择合约</span>}
+                </div>
+                {instEditorOpen ? (
+                <>
+                <div className="automationInstrumentQuick" role="group" aria-label="常用合约快捷选择">
+                  {AUTOMATION_POPULAR_INST_IDS.map((item) => (
+                    <UnstyledButton
+                      key={item}
+                      type="button"
+                      className={`automationInstrumentOption ${form.instIds.includes(item) ? "selected" : ""}`}
+                      aria-pressed={form.instIds.includes(item)}
+                      onClick={() => togglePopularInstrument(item)}
+                    >
+                      {item.replace("-USDT-SWAP", "")}
+                    </UnstyledButton>
+                  ))}
+                </div>
+                <div className="automationInstrumentAddRow">
+                  <TextInput
+                    aria-label="添加自定义合约代码"
+                    size="xs"
+                    placeholder="输入合约代码，如 ETH-USDT-SWAP"
+                    value={customInstId}
+                    onChange={(event) => setCustomInstId(event.target.value.toUpperCase())}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addCustomInstrument();
+                      }
+                    }}
+                  />
+                  <Button variant="default" size="xs" className="secondaryButton" type="button" onClick={addCustomInstrument}>添加</Button>
+                </div>
+                </>
+                ) : null}
+              </div>
+              <div className="automationTripleRow">
+                <label className="fieldBlock">
+                  <span>
+                    判断方式
+                    <FieldHint
+                      label="判断方式说明"
+                      text={form.template === "llm_direct"
+                        ? `AI 读 K 线、持仓与大盘情绪，输出多空 / 观望；置信度低于 ${automationStatus?.llmMinConfidence ?? 70} 不下单。LLM 每根 K 线调用 1 次，当前 ${strategyContractCount} 合约 ≈ ${dailyEvalLimit} 次/天。`
+                        : `MA${form.fastWindow} 上穿 / 下穿 MA${form.slowWindow} 出多 / 空；只在交叉那根收盘 K 线评估，窗口沿用已保存值。`}
+                    />
+                  </span>
+                  <Select value={form.template} onChange={(value) => value && updateForm("template", value)} data={automationTemplateOptions.map((item) => ({ value: item.key, label: item.label }))} />
+                </label>
+                <label className="fieldBlock">
+                  <span>
+                    执行方式
+                    <FieldHint
+                      label="执行方式说明"
+                      text={form.executionMode === "simulated_auto"
+                        ? "风控通过后模拟盘自动下单，实盘永不自动执行；需要模拟盘 API 凭证与交易开关。"
+                        : "只记录信号，不下单、不检查止盈止损。"}
+                    />
+                  </span>
+                  <Select value={form.executionMode} onChange={(value) => value && updateForm("executionMode", value)} data={automationExecutionModeOptions.map((item) => ({ value: item.key, label: item.label }))} />
+                </label>
+                <label className="fieldBlock automationBarField">
+                  <span>
+                    信号周期
+                    <FieldHint
+                      label="信号周期说明"
+                      text={`${form.bar}（${barIntervalLabel}）：${barCadence.cadence}评估 1 次，单合约 ≤${barCadence.perDay} 次/天。评估上限（次/天/合约）：1m 1440 / 5m 288 / 15m 96 / 1H 24。周期越大信号越少越稳；止盈止损不受周期影响，仍每 10 秒检查。`}
+                    />
+                  </span>
+                  <Select value={form.bar} onChange={(value) => value && updateForm("bar", value)} data={automationBarOptions.map((item) => ({ value: item.key, label: item.label }))} />
+                </label>
+              </div>
+              <div className="automationNumberRow">
+                <label className="fieldBlock">
+                  <span>每次下单</span>
+                  <TextInput inputMode="decimal" value={form.sz} onChange={(event) => updateOrderContracts(event.target.value)} />
+                </label>
+                <label className="fieldBlock">
+                  <span>最多持仓</span>
+                  <TextInput inputMode="decimal" value={form.maxPositionContracts} onChange={(event) => updateForm("maxPositionContracts", event.target.value)} />
+                </label>
+                <label className="fieldBlock">
+                  <span>
+                    止盈%
+                    <FieldHint
+                      label="止盈口径"
+                      text="按价格变动百分比判定：开仓均价与标记价格对比，不乘杠杆（20 倍杠杆下价格反向 2% 即触发 2%）；0 表示关闭该项。命中后引擎在约 10 秒内的下一轮轮询优先于新开仓信号市价全平，仅模拟盘生效。默认不在 OKX 挂条件单；仅当后端开启交易所侧兜底开关时，才会在开仓成交后附带同口径条件单作进程停止时的兜底。"
+                    />
+                  </span>
+                  <TextInput
+                    inputMode="decimal"
+                    value={form.takeProfitPct}
+                    onChange={(event) => updateForm("takeProfitPct", event.target.value)}
+                    disabled={exitsDisabled}
+                    title={exitsDisabled ? "只提醒模式不会自动平仓，止盈设置不生效" : "按价格变动百分比判定，不含杠杆；0 表示不启用"}
+                  />
+                </label>
+                <label className="fieldBlock">
+                  <span>
+                    止损%
+                    <FieldHint
+                      label="止损口径"
+                      text="按价格变动百分比判定：开仓均价与标记价格对比，不乘杠杆；0 表示关闭该项。命中后约 10 秒内的下一轮轮询会市价全平，仅模拟盘生效。默认不挂交易所条件单；后端开启兜底开关后成交时会附带同口径条件单。"
+                    />
+                  </span>
+                  <TextInput
+                    inputMode="decimal"
+                    value={form.stopLossPct}
+                    onChange={(event) => updateForm("stopLossPct", event.target.value)}
+                    disabled={exitsDisabled}
+                    title={exitsDisabled ? "只提醒模式不会自动平仓，止损设置不生效" : "按价格变动百分比判定，不含杠杆；0 表示不启用"}
+                  />
+                </label>
+              </div>
+              <label className="fieldBlock automationDailyField">
+                <span>
+                  每日仓位%
+                  <FieldHint
+                    label="每日仓位口径"
+                    text="额度 = 模拟盘总权益 × 该百分比，按 UTC+8 自然日累计已提交开仓的名义金额（张数 × 合约面值 × 价格）；同策略多合约共享同一额度，0 表示不限制，平仓不占用额度；权益读不到时直接拦截开仓。"
+                  />
+                </span>
+                <TextInput inputMode="decimal" value={form.dailyPositionPct} onChange={(event) => updateForm("dailyPositionPct", event.target.value)} />
+                <div className={`automationEquityHint ${equityHintTone}`} role="status" aria-live="polite">
+                  {equityHint ? (
+                    <span>{equityHint}</span>
+                  ) : (
+                    <>
+                      <strong>模拟盘权益 {automationEquity?.equity} USDT</strong>
+                      {automationEquity?.availEq ? <span>可用 {automationEquity.availEq} USDT</span> : null}
+                      {automationEquity?.equityBasis && automationEquity.equityBasis !== "totalEq" ? (
+                        <span>基准 {automationEquity.equityBasis}</span>
+                      ) : null}
+                      {hasEquityPct && automationEquity?.dailyLimit ? (
+                        <span>按 {form.dailyPositionPct}% ≈ {automationEquity.dailyLimit} USDT/日</span>
+                      ) : (
+                        <span>填百分比后显示每日额度</span>
+                      )}
+                      {hasEquityPct && automationEquity?.dailyUsedAvailable ? (
+                        <span>今日已用 {automationEquity.dailyUsed} USDT</span>
+                      ) : null}
+                      <span className="automationEquityMeta">
+                        {automationEquity?.source === "okx" ? "实时快照" : "缓存快照"}
+                        {automationEquity?.snapshotTs
+                          ? ` · ${new Date(automationEquity.snapshotTs).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
+                          : ""}
+                      </span>
+                      {automationEquity?.pctInvalid ? <span className="automationEquityWarn">百分比需为 0–100</span> : null}
+                      {automationEquity?.warning ? <span className="automationEquityWarn">{automationEquity.warning}</span> : null}
+                    </>
+                  )}
+                  <Button
+                    variant="subtle"
+                    size="xs"
+                    className="automationRefreshLink"
+                    type="button"
+                    onClick={() => void loadAutomationEquity(true)}
+                    disabled={equityLoading}
+                    title={automationEquity?.snapshotTs ? `账户快照：${new Date(automationEquity.snapshotTs).toLocaleString("zh-CN")}` : "刷新模拟盘账户金额"}
+                  >
+                    {equityLoading ? "读取中" : "刷新"}
+                  </Button>
+                </div>
               </label>
             </div>
-            <Text size="xs" c="dimmed">止盈止损只会随策略保存，不会自动平仓。</Text>
             <div className="cleanCreateFooter">
               <div>
                 <strong>{saveNotice || decisionTitle}</strong>
                 <span>{saveNotice ? saveStateText : decisionMessage}</span>
+                {exitsDisabled ? (
+                  <span className="automationFooterWarn">
+                    只提醒模式：不下单、不自动平仓，止盈止损不生效。
+                  </span>
+                ) : null}
               </div>
               <div className="cleanActionRow">
                 <Button variant="default" className="secondaryButton" type="button" onClick={() => saveStrategy(Boolean(selectedStrategy))} disabled={saving}>
@@ -9893,10 +11774,12 @@ function CleanAutomationPage({
 
 function StrategyListPage({
   onBackToAutomation,
-  onEditStrategy
+  onEditStrategy,
+  onCreateStrategy
 }: {
   onBackToAutomation: () => void;
   onEditStrategy: (strategyId: number) => void;
+  onCreateStrategy: () => void;
 }) {
   const [strategies, setStrategies] = React.useState<AutomationStrategy[]>([]);
   const [signals, setSignals] = React.useState<AutomationSignal[]>([]);
@@ -9957,7 +11840,7 @@ function StrategyListPage({
         if (!keyword) return true;
         return (
           strategy.name.toUpperCase().includes(keyword) ||
-          strategy.inst_id.toUpperCase().includes(keyword) ||
+          (strategy.instIds?.length ? strategy.instIds : [strategy.inst_id]).some((item) => item.toUpperCase().includes(keyword)) ||
           automationTemplateLabel(strategy.template).toUpperCase().includes(keyword)
         );
       })
@@ -10060,6 +11943,9 @@ function StrategyListPage({
             <Badge className="signalLogInlineChip">LLM <strong>{llmCount}</strong></Badge>
             <Badge className="signalLogInlineChip">虚拟盘 <strong>{autoCount}</strong></Badge>
           </div>
+          <Button className="primaryButton slim" size="xs" type="button" onClick={onCreateStrategy}>
+            新建策略
+          </Button>
           <Button variant="default" size="xs" className="secondaryButton slim" type="button" onClick={onBackToAutomation}>
             返回自动交易
           </Button>
@@ -10161,8 +12047,8 @@ function StrategyListPage({
                         <small>#{strategy.id} · 冷却 {strategy.cooldown_seconds}s · 最后 {formatTime(strategy.last_eval_ts ?? "")}</small>
                       </td>
                       <td>
-                        <strong>{strategy.inst_id}</strong>
-                        <small>{strategy.bar}</small>
+                        <strong title={(strategy.instIds?.length ? strategy.instIds : [strategy.inst_id]).join("、")}>{strategyInstrumentLabel(strategy)}</strong>
+                        <small>{automationBarLabel(strategy.bar)}</small>
                       </td>
                       <td>
                         <strong>{automationTemplateLabel(strategy.template)}</strong>
@@ -10447,9 +12333,9 @@ function SignalLogPage({ onOpenSignalDetail }: { onOpenSignalDetail: (signalId: 
                   const hasAi = Boolean(signalLlmAnalysis(signal) || signalLlmFailure(signal));
                   return (
                     <SelectableTableRow key={signal.id} onSelect={() => onOpenSignalDetail(signal.id)} title="点击查看信号详情">
-                      <td>
-                        <strong>{hasValidDate ? signalDate.toLocaleTimeString("zh-CN", { hour12: false }) : "--"}</strong>
-                        <small>{hasValidDate ? signalDate.toLocaleDateString("zh-CN") : formatTime(signal.ts)}</small>
+                      <td title={formatTime(signal.ts)}>
+                        <strong>{formatClockSecond(signal.ts)}</strong>
+                        <small>{hasValidDate ? formatDayHint(signal.ts) : formatTime(signal.ts)}</small>
                       </td>
                       <td>
                         <strong>{signal.inst_id}</strong>
@@ -10566,7 +12452,7 @@ function SignalDetailPage({ signalId, onBack }: { signalId: number | null; onBac
             <Badge className={`statusPill ${automationStatus?.running ? "live" : "warning"}`}>
               引擎{automationStatus?.running ? "运行中" : "未运行"}
             </Badge>
-            <Badge className={`statusPill ${automationStatus?.globalPaused || automationStatus?.circuitBreakerActive ? "warning" : "live"}`}>
+            <Badge className={`statusPill ${automationStatus?.globalStateAvailable === false || automationStatus?.globalPaused || automationStatus?.circuitBreakerActive ? "warning" : "live"}`}>
               {automationGlobalStateLabel(automationStatus)}
             </Badge>
             <Badge className="statusPill">轮询 {automationStatus?.intervalSeconds ?? "--"}秒</Badge>
@@ -10607,7 +12493,7 @@ function SignalDetailPage({ signalId, onBack }: { signalId: number | null; onBac
                   )}
                 </div>
                 <div>
-                  <span>{automationTemplateLabel(signal.template)} · {signal.bar}</span>
+                  <span>{automationTemplateLabel(signal.template)} · {automationBarLabel(signal.bar)}</span>
                   <h2>{automationActionLabel(signal.action)}</h2>
                   <p>{signal.strategy_name ?? selectedStrategy?.name ?? `策略 #${signal.strategy_id}`}</p>
                 </div>
@@ -11674,7 +13560,8 @@ function PositionsPage() {
                 instId: closeOrder.instId,
                 mgnMode: positionCloseTradeMode(position),
                 posSide: closeOrder.posSide,
-                autoCxl: false
+                autoCxl: false,
+                environment: activeEnvironment
               })
             })
           : await fetch(`${API_BASE}/api/trading/orders`, {
@@ -11688,7 +13575,8 @@ function PositionsPage() {
                 ordType: positionCloseModeOrderType(mode),
                 sz: requestedSize,
                 px: mode === "limit_reduce" ? requestedPrice : undefined,
-                reduceOnly: true
+                reduceOnly: true,
+                environment: activeEnvironment
               })
             });
       const payload = await response.json().catch(() => ({}));
@@ -11984,7 +13872,6 @@ function LlmSettingsPage() {
           temperature: Number(form.temperature),
           maxTokens: Number(form.maxTokens),
           timeoutSeconds: Number(form.timeoutSeconds),
-          mode: form.mode,
           systemPrompt: form.systemPrompt
         })
       });
@@ -11993,10 +13880,15 @@ function LlmSettingsPage() {
       const nextConfig = payload.data as LlmConfig;
       setConfig(nextConfig);
       setForm(llmConfigToForm(nextConfig));
-      if (showStatus) setStatus("AI 配置已保存");
+      if (showStatus) {
+        setStatus("AI 配置已保存");
+        notifications.show({ title: "已保存", message: "AI 配置已更新", color: "green" });
+      }
       return true;
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "AI 配置保存失败");
+      const message = error instanceof Error ? error.message : "AI 配置保存失败";
+      setStatus(message);
+      notifications.show({ title: "保存失败", message, color: "red" });
       return false;
     } finally {
       setSaving(false);
@@ -12014,8 +13906,11 @@ function LlmSettingsPage() {
       if (!response.ok) throw new Error(payload.detail ?? "AI 连接测试失败");
       setTestResult(payload.data as LlmAnalysis);
       setStatus("AI 连接测试通过");
+      notifications.show({ title: "连接测试通过", message: `模型 ${form.model || "未知"} 已返回结构化结果`, color: "green" });
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "AI 连接测试失败");
+      const message = error instanceof Error ? error.message : "AI 连接测试失败";
+      setStatus(message);
+      notifications.show({ title: "连接测试失败", message, color: "red" });
     } finally {
       setTesting(false);
     }
@@ -12030,6 +13925,15 @@ function LlmSettingsPage() {
   const selectedModelOptions = selectedProviderPreset.models;
   const modelSelectValue = llmModelSelectValue(form.model, selectedModelOptions);
   const selectedModelNote = llmModelNote(selectedProviderPreset, form.model);
+  const apiKeyReady = Boolean(config?.apiKeyConfigured || form.apiKey.trim());
+  const llmReady = Boolean(form.providerPreset) && form.baseUrl.trim().length > 0 && form.model.trim().length > 0 && apiKeyReady;
+  const llmReadinessChecks: { label: string; value: string; ok: boolean }[] = [
+    { label: "启用", value: form.enabled ? "已启用" : "未启用", ok: form.enabled },
+    { label: "服务商", value: selectedProviderPreset?.label ?? "未选择", ok: Boolean(form.providerPreset) },
+    { label: "Base URL", value: form.baseUrl.trim() ? "已填写" : "未填写", ok: form.baseUrl.trim().length > 0 },
+    { label: "模型", value: form.model.trim() || "未填写", ok: form.model.trim().length > 0 },
+    { label: "API Key", value: apiKeyStatus, ok: apiKeyReady }
+  ];
 
   return (
     <section className="llmPage">
@@ -12037,7 +13941,6 @@ function LlmSettingsPage() {
         <div className="workspaceActions">
           <div className="statusPills" aria-label="AI 配置状态">
             <Badge className={`statusPill ${form.enabled ? "live" : ""}`}>{form.enabled ? "已启用" : "未启用"}</Badge>
-            <Badge className="statusPill">{llmModeLabel(form.mode)}</Badge>
             <Badge className={`statusPill ${config?.apiKeyConfigured || form.apiKey.trim() ? "live" : "warning"}`}>{apiKeyStatus}</Badge>
           </div>
           <IconButton label="刷新 AI 配置" onClick={() => loadConfig().catch(() => setStatus("AI 配置加载失败"))}>
@@ -12064,7 +13967,6 @@ function LlmSettingsPage() {
           <div className="llmForm">
             <Checkbox className="checkField llmEnable" label="启用 LLM 信号分析" checked={form.enabled}
               onChange={(event) => updateForm("enabled", event.target.checked)} />
-            <SegmentedField label="分析模式" value={form.mode} options={llmModeOptions} onChange={(value) => updateForm("mode", value)} />
             <div className="fieldGrid">
               <label className="fieldBlock">
                 <span>服务商预设</span>
@@ -12077,8 +13979,28 @@ function LlmSettingsPage() {
                   value={modelSelectValue}
                   onChange={(value) => value && selectPresetModel(value)}
                   disabled={selectedModelOptions.length === 0}
-                  data={[...selectedModelOptions.map((model) => ({ value: model, label: llmModelLabel(selectedProviderPreset, model) })),
-                    { value: "__custom__", label: "自定义 / 手动填写" }]}
+                  searchable
+                  maxDropdownHeight={280}
+                  nothingFoundMessage="未找到匹配的模型"
+                  data={[
+                    ...selectedModelOptions.map((model) => ({
+                      value: model,
+                      label: model,
+                      description: llmModelNote(selectedProviderPreset, model)
+                    })),
+                    { value: "__custom__", label: "自定义 / 手动填写", description: "选择后在下方手动填写任意模型名称" }
+                  ]}
+                  renderOption={({ option }) => {
+                    const description = (option as { description?: string }).description;
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2, width: "100%" }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{option.label}</span>
+                        {description ? (
+                          <span style={{ fontSize: 12, color: "var(--color-muted-strong)", lineHeight: 1.3 }}>{description}</span>
+                        ) : null}
+                      </div>
+                    );
+                  }}
                 />
               </label>
             </div>
@@ -12100,8 +14022,9 @@ function LlmSettingsPage() {
                 />
               </label>
               <label className="fieldBlock">
-                <span>模型名称</span>
-                <TextInput value={form.model} onChange={(event) => updateForm("model", event.target.value)} placeholder="gpt-4.1-mini" />
+                <span>自定义模型名称（可选）</span>
+                <TextInput value={form.model} onChange={(event) => updateForm("model", event.target.value)} placeholder="例如 deepseek-flash" />
+                <span style={{ fontSize: 12, color: "var(--color-muted-strong)" }}>下拉未列出时，可在此手动填写任意模型名称</span>
               </label>
             </div>
             <PasswordInput className="fieldBlock" label="API Key" value={form.apiKey}
@@ -12109,24 +14032,34 @@ function LlmSettingsPage() {
               placeholder={config?.apiKeyConfigured ? `保留已保存 Key：${config.apiKeyMasked}` : "填写你的 LLM API Key"} />
             <Checkbox className="checkField" label="清除已保存 API Key" checked={form.clearApiKey}
               onChange={(event) => updateForm("clearApiKey", event.target.checked)} disabled={!config?.apiKeyConfigured} />
-            <div className="fieldGrid">
+            <Disclosure
+              className="llmAdvancedDisclosure"
+              label={
+                <>
+                  <SlidersHorizontal size={14} aria-hidden="true" />
+                  高级参数（Temperature / 最大 Token / 超时 / 系统 Prompt）
+                </>
+              }
+            >
+              <div className="fieldGrid">
+                <label className="fieldBlock">
+                  <span>Temperature</span>
+                  <TextInput inputMode="decimal" value={form.temperature} onChange={(event) => updateForm("temperature", event.target.value)} />
+                </label>
+                <label className="fieldBlock">
+                  <span>最大输出 Token</span>
+                  <TextInput inputMode="numeric" value={form.maxTokens} onChange={(event) => updateForm("maxTokens", event.target.value)} />
+                </label>
+              </div>
               <label className="fieldBlock">
-                <span>Temperature</span>
-                <TextInput inputMode="decimal" value={form.temperature} onChange={(event) => updateForm("temperature", event.target.value)} />
+                <span>超时秒数</span>
+                <TextInput inputMode="numeric" value={form.timeoutSeconds} onChange={(event) => updateForm("timeoutSeconds", event.target.value)} />
               </label>
               <label className="fieldBlock">
-                <span>最大输出 Token</span>
-                <TextInput inputMode="numeric" value={form.maxTokens} onChange={(event) => updateForm("maxTokens", event.target.value)} />
+                <span>系统 Prompt</span>
+                <Textarea value={form.systemPrompt} onChange={(event) => updateForm("systemPrompt", event.target.value)} minRows={7} autosize />
               </label>
-            </div>
-            <label className="fieldBlock">
-              <span>超时秒数</span>
-              <TextInput inputMode="numeric" value={form.timeoutSeconds} onChange={(event) => updateForm("timeoutSeconds", event.target.value)} />
-            </label>
-            <label className="fieldBlock">
-              <span>系统 Prompt</span>
-              <Textarea value={form.systemPrompt} onChange={(event) => updateForm("systemPrompt", event.target.value)} minRows={7} autosize />
-            </label>
+            </Disclosure>
             <div className="llmActions">
               <Button className="secondaryButton" variant="default" type="button" onClick={testConfig} disabled={saving || testing}>
                 <Send size={15} />
@@ -12140,51 +14073,47 @@ function LlmSettingsPage() {
           </div>
         </section>
 
-        <section className="positionsPanel llmPreviewPanel">
-          <PanelHeader icon={<ShieldCheck size={17} />} title="接入方式" meta="不直接下单" />
-          <div className="llmFlow">
-            <div>
-              <strong>1. 数据摘要</strong>
-              <span>后端整理已收盘 K 线、持仓、账户风险和最近信号。</span>
-            </div>
-            <div>
-              <strong>2. LLM 判断</strong>
-              <span>模型返回做多 / 做空 / 观望、置信度、理由、风险和失效条件。</span>
-            </div>
-            <div>
-              <strong>3. 系统风控</strong>
-              <span>低于 70 置信度、重复加仓、API 异常都会拦截或跳过。</span>
-            </div>
-            <div>
-              <strong>4. 模拟盘执行</strong>
-              <span>只允许虚拟盘自动开仓；反向信号先市价全平再开新方向。</span>
-            </div>
-          </div>
-          {testResult ? (
-            <div className="aiAnalysisPanel testResult">
-              <div className="aiAnalysisHeader">
-                <div>
-                  <BrainCircuit size={18} aria-hidden="true" />
-                  <strong>测试结果</strong>
+        <section className="positionsPanel llmStatusPanel">
+          <PanelHeader icon={<Check size={17} />} title="配置状态" meta="实时" />
+          <div className="llmStatusBody">
+            <div className="llmCheckList">
+              {llmReadinessChecks.map((item) => (
+                <div key={item.label} className={`llmCheckItem ${item.ok ? "ok" : "todo"}`}>
+                  <span className="llmCheckDot" aria-hidden="true" />
+                  <span className="llmCheckLabel">{item.label}</span>
+                  <span className="llmCheckValue">{item.value}</span>
                 </div>
-                <Badge className="statusPill live">连接正常</Badge>
-              </div>
-              <p className="aiSummary">{testResult.summary || "LLM 已返回结构化结果。"}</p>
-              <div className="aiAnalysisGrid">
-                <Metric label="模型" value={testResult.model || form.model || "--"} />
-                <Metric label="建议" value={llmRecommendationLabel(testResult.recommendation)} />
-                <Metric label="置信度" value={`${testResult.confidence ?? 0}%`} />
-                <Metric label="总 Token" value={formatTokenCount(Number(testResult.usage?.total_tokens ?? 0))} />
-                <Metric label="输入 / 输出" value={`${formatTokenCount(Number(testResult.usage?.prompt_tokens ?? 0))} / ${formatTokenCount(Number(testResult.usage?.completion_tokens ?? 0))}`} />
-                <Metric label="耗时" value={formatLatency(Number(testResult.usage?.duration_ms ?? testResult.duration_ms ?? 0))} />
-              </div>
+              ))}
             </div>
-          ) : (
-            <div className="signalReasonBox muted">
-              <strong>测试说明</strong>
-              <p>保存并测试会请求你配置的 LLM 接口，确认返回格式可以被系统解析。</p>
+            <div className={`llmReadiness ${llmReady ? "ok" : "warn"}`}>
+              {llmReady ? "配置完整，可保存并测试" : "请补全必填项后再测试"}
             </div>
-          )}
+            {testResult ? (
+              <div className="aiAnalysisPanel testResult">
+                <div className="aiAnalysisHeader">
+                  <div>
+                    <BrainCircuit size={18} aria-hidden="true" />
+                    <strong>测试结果</strong>
+                  </div>
+                  <Badge className="statusPill live">连接正常</Badge>
+                </div>
+                <p className="aiSummary">{testResult.summary || "LLM 已返回结构化结果。"}</p>
+                <div className="aiAnalysisGrid">
+                  <Metric label="模型" value={testResult.model || form.model || "--"} />
+                  <Metric label="建议" value={llmRecommendationLabel(testResult.recommendation)} />
+                  <Metric label="置信度" value={`${testResult.confidence ?? 0}%`} />
+                  <Metric label="总 Token" value={formatTokenCount(Number(testResult.usage?.total_tokens ?? 0))} />
+                  <Metric label="输入 / 输出" value={`${formatTokenCount(Number(testResult.usage?.prompt_tokens ?? 0))} / ${formatTokenCount(Number(testResult.usage?.completion_tokens ?? 0))}`} />
+                  <Metric label="耗时" value={formatLatency(Number(testResult.usage?.duration_ms ?? testResult.duration_ms ?? 0))} />
+                </div>
+              </div>
+            ) : (
+              <div className="signalReasonBox muted">
+                <strong>验证连接</strong>
+                <p>点击「保存并测试」后，这里显示 LLM 返回的结构化结果。</p>
+              </div>
+            )}
+          </div>
         </section>
       </section>
     </section>

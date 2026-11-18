@@ -57,9 +57,13 @@ test("market workbench owns shared ticker and chart-snapshot realtime data", () 
   assert.doesNotMatch(aiSource, /useRealtimeFeed\(\{/);
   assert.doesNotMatch(statsSource, /useRealtimeFeed\(\{/);
   assert.match(source, /const tradeRealtime = useRealtimeFeed\(\{/);
-  assert.match(source, /topics: \["market\.ticker", "account", "positions", "orders"\]/);
+  assert.match(source, /topics: \["market\.ticker", "account", "positions"\]/);
+  const ordersStart = source.indexOf("function OrdersPage(");
+  const ordersSource = source.slice(ordersStart, source.indexOf("function strategyInstrumentLabel("));
+  assert.match(ordersSource, /topics: \["orders"\]/);
+  assert.match(ordersSource, /payload\.type === "order\.update"/);
+  assert.match(ordersSource, /onSnapshotRequired: \(payload\) => \{[\s\S]*?loadOrders\(\)/);
   assert.match(source, /loadTickers\(\)\.catch\(\(\) => undefined\)/);
-  assert.match(source, /loadOrders\(true\)\.catch\(\(\) => undefined\)/);
 });
 
 test("account positions and automation use realtime as refresh signals over rest snapshots", () => {

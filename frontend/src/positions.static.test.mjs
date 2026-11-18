@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const source = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
-const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const positionsStart = source.indexOf("function PositionsPage()");
 const accountStart = source.indexOf("function AccountPage()");
 const positionsSource = source.slice(positionsStart, accountStart);

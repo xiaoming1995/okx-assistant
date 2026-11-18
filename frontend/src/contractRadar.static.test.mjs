@@ -145,10 +145,14 @@ test("contract radar page opens existing workflows with selected contract", () =
 });
 
 test("main navigation is grouped into primary sections and secondary tabs", () => {
-  assert.match(source, /type PrimarySection = "market" \| "trade" \| "automation" \| "account" \| "settings"/);
+  assert.match(source, /type PrimarySection = "market" \| "trade" \| "orders" \| "automation" \| "account" \| "settings"/);
+  assert.match(source, /openPrimarySection\("orders"\)/);
+  assert.match(source, /parts\[0\] === "orders"/);
+  assert.match(source, /path = "\/orders"/);
   assert.match(source, /<SectionTabs/);
   assert.match(source, /市场/);
   assert.match(source, /交易/);
+  assert.match(source, /订单/);
   assert.match(source, /自动化/);
   assert.match(source, /账户/);
   assert.match(source, /设置/);
@@ -197,15 +201,16 @@ test("automation strategy editor clarifies save and start state", () => {
   assert.match(source, /保存为暂停/);
   assert.match(source, /策略已保存，但仍处于暂停状态/);
   assert.match(source, /策略已保存并启动/);
-  assert.match(source, /止盈止损只会随策略保存，不会自动平仓/);
+  assert.match(source, /优先于新开仓信号市价全平/);
+  assert.match(source, /额度 = 模拟盘总权益 × 该百分比/);
+  assert.doesNotMatch(source, /止盈止损只会随策略保存，不会自动平仓/);
   assert.match(source, /\/toggle/);
 });
 
 test("automation overview keeps decision and metrics in one compact block", () => {
   assert.match(source, /cleanInlineMetrics/);
   assert.match(source, /cleanInlineMetric/);
-  assert.match(source, /signals\.slice\(0, 4\)/);
-  assert.match(source, /当前结论/);
+  assert.match(source, /signals\.slice\(0, 5\)/);
   assert.match(source, /自动交易关键指标/);
   assert.match(source, /\/api\/automation\/pause/);
   assert.match(source, /\/api\/automation\/resume/);

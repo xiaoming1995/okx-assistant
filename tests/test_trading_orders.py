@@ -51,6 +51,7 @@ def test_orders_for_environment_returns_filtered_paging(monkeypatch):
             "keyword": "btc-3",
             "action": "place",
             "state": "accepted",
+            "origin": "",
         },
     )
     assert calls[1] == (
@@ -61,5 +62,6 @@ def test_orders_for_environment_returns_filtered_paging(monkeypatch):
             "keyword": "btc-3",
             "action": "place",
             "state": "accepted",
+            "origin": "",
         },
     )

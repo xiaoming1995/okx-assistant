@@ -216,6 +216,48 @@ def test_radar_24h_scan_reuses_sufficient_legacy_candles_without_quote_turnover(
     ) == cached
 
 
+def test_radar_reuses_snake_case_db_candles_without_okx_refresh(monkeypatch):
+    """Postgres/SQLite rows use volume_quote; downstream logic reads volumeQuote.
+
+    A complete cached 15m window must be reused as-is so a scan does not re-hit
+    OKX for every candidate (which causes 150s gateway timeouts when the
+    upstream is unreachable).
+    """
+    cached = [
+        {
+            "ts": str(1000 + index),
+            "open": "100",
+            "high": "102",
+            "low": "99",
+            "close": "101",
+            "volume": str(100 + index),
+            "volume_quote": str(1000 + index),
+            "volume_ccy": str(10 + index),
+            "confirm": "1",
+        }
+        for index in range(40)
+    ]
+
+    class FakeDatabase:
+        def latest_candles(self, *_args):
+            return cached
+
+    monkeypatch.setattr(main, "database", FakeDatabase())
+    monkeypatch.setattr(
+        main.client,
+        "get_candles",
+        lambda *_args: pytest.fail("complete snake_case cache must not trigger an OKX refresh"),
+    )
+
+    rows = main.radar_candles("BTC-USDT-SWAP", "15m", 80)
+    assert len(rows) == 40
+    assert rows[-1]["volumeQuote"] == "1039"
+
+    turnover = main.radar_turnover_window(rows, {"comparable": True, "unit": "USDT"})
+    assert turnover["comparable"] is True
+    assert main.Decimal(turnover["value"]) == main.Decimal("4150")
+
+
 def test_radar_entry_assessment_uses_volume_and_fluctuation():
     ticker = radar_ticker("MID-USDT-SWAP", volume="80000000", last="104")
     ticker["open24h"] = "100"
@@ -338,6 +380,7 @@ def test_radar_scan_returns_ranked_candidates(monkeypatch):
     assert payload["summary"]["total"] == 2
     assert payload["summary"]["returned"] == 2
     assert all("scores" in item for item in payload["data"])
+    assert all("direction" in item and "entryZone" in item for item in payload["data"])
 
 
 def test_radar_default_sort_uses_one_hour_turnover_and_24h_is_explicit(monkeypatch):
@@ -714,7 +757,8 @@ def test_radar_market_llm_analysis_bad_json_fallback_is_user_friendly(monkeypatc
     assert "Expecting" not in analysis["warnings"][0]
 
 
-def test_radar_market_analysis_falls_back_when_llm_unavailable(monkeypatch):
+def test_radar_market_analysis_reports_not_configured_state(monkeypatch):
+    """No LLM configured => no rule-generated content masquerading as AI output."""
     result = main.score_radar_contract(radar_instrument(), radar_ticker(), radar_candles(), main.Decimal("1000000"))
     market_summary = main.build_radar_market_summary(
         {
@@ -729,9 +773,143 @@ def test_radar_market_analysis_falls_back_when_llm_unavailable(monkeypatch):
 
     analysis = main.run_radar_market_llm_analysis(market_summary)
 
+    assert analysis["status"] == "not-configured"
+    assert analysis["source"] == "llm-not-configured"
+    assert analysis["summary"] == ""
+    assert analysis["highlights"] == []
+    assert analysis["watchlist"] == []
+    assert analysis["riskWarnings"] == []
+    assert analysis["suggestedFilters"] == []
+    guide = analysis["setupGuide"]
+    assert guide["settingsPath"] == "#/settings/llm"
+    assert len(guide["steps"]) >= 3
+    assert "API Key" in guide["requiredFields"]
+    assert analysis["warnings"]
+
+
+def test_radar_market_analysis_llm_failure_keeps_labelled_rule_fallback(monkeypatch):
+    """Configured but failing LLM still yields rule output, labelled as fallback."""
+    result = main.score_radar_contract(radar_instrument(), radar_ticker(), radar_candles(), main.Decimal("1000000"))
+    market_summary = main.build_radar_market_summary(
+        {
+            "data": [result],
+            "filters": main.RadarScanRequest().model_dump(),
+            "summary": {"total": 1, "candidates": 1, "returned": 1, "explained": 0},
+            "ts": 123000,
+        },
+        [result],
+    )
+    monkeypatch.setattr(
+        main,
+        "stored_llm_config",
+        lambda: {"enabled": True, "baseUrl": "https://example.test/v1", "model": "demo", "apiKey": "key", "temperature": 0.2, "maxTokens": 800},
+    )
+
+    def fail(*_args, **_kwargs):
+        raise main.LlmCompletionError("连接超时")
+
+    monkeypatch.setattr(main, "llm_chat_completion", fail)
+
+    analysis = main.run_radar_market_llm_analysis(market_summary)
+
     assert analysis["source"] == "metric-fallback"
     assert analysis["warnings"]
-    assert analysis["watchlist"][0]["instId"] == "BTC-USDT-SWAP"
+    assert "指标分析" in analysis["warnings"][0]
+
+
+def test_radar_cached_analysis_skips_sentiment_when_not_configured(monkeypatch):
+    stored = {}
+
+    class FakeDatabase:
+        def get_app_setting(self, key):
+            return stored.get(key)
+
+        def set_app_setting(self, key, value, ts):
+            stored[key] = value
+
+    request = main.RadarScanRequest()
+    result = main.score_radar_contract(radar_instrument(), radar_ticker(), radar_candles(), main.Decimal("1000000"))
+    radar_payload = {
+        "data": [result],
+        "filters": request.model_dump(),
+        "summary": {"total": 1, "candidates": 1, "returned": 1, "explained": 0},
+        "source": "okx-radar",
+        "ts": 100000,
+        "cacheAgeMs": 0,
+    }
+    radar_payload["marketSummary"] = main.build_radar_market_summary(radar_payload, [result])
+    calls = {"enrich": 0}
+
+    def fake_enrich(payload):
+        calls["enrich"] += 1
+        return payload.get("marketSummary") or {}
+
+    monkeypatch.setattr(main, "database", FakeDatabase())
+    monkeypatch.setattr(main, "stored_llm_config", lambda: {"enabled": False})
+    monkeypatch.setattr(main, "enrich_radar_sentiment", fake_enrich)
+    with main.radar_analysis_cache_lock:
+        main.radar_analysis_cache["payload"] = None
+        main.radar_analysis_cache["ts"] = 0
+        main.radar_analysis_cache["cacheKey"] = ""
+
+    response = main.cached_radar_market_analysis(request, radar_payload, force=True)
+
+    assert response["status"] == "not-configured"
+    assert response["source"] == "llm-not-configured"
+    assert calls["enrich"] == 0
+    assert main.RADAR_ANALYSIS_CACHE_KEY not in stored
+
+
+def test_radar_cached_analysis_ignores_stale_not_configured_snapshot(monkeypatch):
+    stored = {}
+
+    class FakeDatabase:
+        def get_app_setting(self, key):
+            return stored.get(key)
+
+        def set_app_setting(self, key, value, ts):
+            stored[key] = value
+
+    request = main.RadarScanRequest()
+    result = main.score_radar_contract(radar_instrument(), radar_ticker(), radar_candles(), main.Decimal("1000000"))
+    radar_payload = {
+        "data": [result],
+        "filters": request.model_dump(),
+        "summary": {"total": 1, "candidates": 1, "returned": 1, "explained": 0},
+        "source": "okx-radar",
+        "ts": 100000,
+        "cacheAgeMs": 0,
+    }
+    radar_payload["marketSummary"] = main.build_radar_market_summary(radar_payload, [result])
+    monkeypatch.setattr(main, "database", FakeDatabase())
+    monkeypatch.setattr(main, "now_ms", lambda: 100001)
+    monkeypatch.setattr(main, "stored_llm_config", lambda: {"enabled": True, "baseUrl": "https://example.test/v1", "model": "demo", "apiKey": "key"})
+    monkeypatch.setattr(main, "enrich_radar_sentiment", lambda _payload: {})
+    monkeypatch.setattr(main, "run_radar_market_llm_analysis", lambda _summary: {"source": "llm-market-analysis", "summary": "ok"})
+    with main.radar_analysis_cache_lock:
+        main.radar_analysis_cache["payload"] = None
+        main.radar_analysis_cache["ts"] = 0
+        main.radar_analysis_cache["cacheKey"] = ""
+    cache_key = main.radar_market_analysis_key(request, radar_payload)
+    main.save_radar_analysis_snapshot(cache_key, main.radar_llm_not_configured_payload(), 100000)
+
+    response = main.cached_radar_market_analysis(request, radar_payload, force=False)
+
+    assert response["source"] == "llm-market-analysis"
+
+    # Disabling the LLM must win over any cached analysis payload.
+    monkeypatch.setattr(main, "stored_llm_config", lambda: {"enabled": False})
+    disabled = main.cached_radar_market_analysis(request, radar_payload, force=False)
+    assert disabled["status"] == "not-configured"
+    assert disabled["watchlist"] == []
+
+
+def test_radar_analysis_cache_preserves_origin_source():
+    result = main.radar_analysis_payload_with_cache_meta(
+        {"source": "metric-fallback", "summary": "x"}, "radar-analysis-cache", 1000
+    )
+    assert result["originSource"] == "metric-fallback"
+    assert result["source"] == "radar-analysis-cache"
 
 
 def test_radar_market_analysis_cache_reuses_fresh_snapshot(monkeypatch):
@@ -763,7 +941,10 @@ def test_radar_market_analysis_cache_reuses_fresh_snapshot(monkeypatch):
 
     monkeypatch.setattr(main, "database", FakeDatabase())
     monkeypatch.setattr(main, "now_ms", lambda: 100000)
+    monkeypatch.setattr(main, "stored_llm_config", lambda: {"enabled": True, "baseUrl": "https://example.test/v1", "model": "demo", "apiKey": "key"})
     monkeypatch.setattr(main, "run_radar_market_llm_analysis", fake_analysis)
+    monkeypatch.setattr(main.client, "get_funding_rate", lambda *_args: None)
+    monkeypatch.setattr(main.client, "get_open_interest_bulk", lambda *_args: {})
     with main.radar_analysis_cache_lock:
         main.radar_analysis_cache["payload"] = None
         main.radar_analysis_cache["ts"] = 0
@@ -803,7 +984,236 @@ def test_radar_market_analysis_does_not_mutate_ranking(monkeypatch):
     before = [item["instId"] for item in radar_payload["data"]]
     monkeypatch.setattr(main, "database", FakeDatabase())
     monkeypatch.setattr(main, "stored_llm_config", lambda: {"enabled": False})
+    monkeypatch.setattr(main.client, "get_funding_rate", lambda *_args: None)
+    monkeypatch.setattr(main.client, "get_open_interest_bulk", lambda *_args: {})
 
     main.cached_radar_market_analysis(request, radar_payload, force=True)
 
     assert [item["instId"] for item in radar_payload["data"]] == before
+
+
+def _radar_row_with_sentiment(inst_id, funding_rate=None, open_interest=None):
+    result = main.score_radar_contract(
+        radar_instrument(inst_id),
+        radar_ticker(inst_id, volume="50000000", last="100"),
+        radar_candles(),
+        main.Decimal("1000000"),
+    )
+    result["fundingRate"] = main.Decimal(funding_rate) if funding_rate is not None else None
+    result["openInterestUsd"] = main.Decimal(open_interest) if open_interest is not None else None
+    return result
+
+
+def test_radar_market_summary_aggregates_sentiment():
+    rows = [
+        _radar_row_with_sentiment("COIN0-USDT-SWAP", "0.0001", "1000000"),
+        _radar_row_with_sentiment("COIN1-USDT-SWAP", "-0.0002", "2000000"),
+        _radar_row_with_sentiment("COIN2-USDT-SWAP", None, None),
+    ]
+    payload = {
+        "data": rows,
+        "filters": main.RadarScanRequest().model_dump(),
+        "summary": {"total": 3, "candidates": 3, "returned": 3, "explained": 0},
+        "ts": 123000,
+    }
+
+    summary = main.build_radar_market_summary(payload, rows)
+
+    sentiment = summary["sentiment"]
+    assert sentiment["funding"]["sampled"] == 2
+    assert sentiment["funding"]["positive"] == 1
+    assert sentiment["funding"]["negative"] == 1
+    assert sentiment["funding"]["neutral"] == 0
+    assert sentiment["openInterest"]["sampled"] == 2
+    assert "fundingRate" in summary["leaders"][0]
+    assert "openInterestUsd" in summary["leaders"][0]
+
+
+def test_radar_enrich_sentiment_fetches_and_rebuilds(monkeypatch):
+    captured = {}
+
+    def fake_funding(inst_id):
+        captured.setdefault("fr", []).append(inst_id)
+        return {"fundingRate": "0.0001"}
+
+    def fake_oi_bulk():
+        captured["oi_bulk_called"] = True
+        return {
+            "COIN0-USDT-SWAP": "1234567.89",
+            "COIN1-USDT-SWAP": "2234567.89",
+            "COIN2-USDT-SWAP": "3234567.89",
+        }
+
+    # Reset module-level caches so the assertions are deterministic.
+    monkeypatch.setattr(main, "_radar_sentiment_funding_cache", {})
+    monkeypatch.setattr(main, "_radar_sentiment_oi_bulk_cache", None)
+    monkeypatch.setattr(main.client, "get_funding_rate", fake_funding)
+    monkeypatch.setattr(main.client, "get_open_interest_bulk", fake_oi_bulk)
+
+    rows = [
+        _radar_row_with_sentiment(f"COIN{index}-USDT-SWAP")
+        for index in range(3)
+    ]
+    payload = {
+        "data": rows,
+        "filters": main.RadarScanRequest().model_dump(),
+        "summary": {"total": 3, "candidates": 3, "returned": 3, "explained": 0},
+        "ts": 123000,
+    }
+
+    summary = main.enrich_radar_sentiment(payload)
+
+    assert summary["sentiment"]["funding"]["sampled"] == 3
+    assert summary["sentiment"]["funding"]["positive"] == 3
+    assert summary["leaders"][0]["fundingRate"] != ""
+    assert all(row.get("fundingRate") is not None for row in rows)
+    assert captured["fr"] == ["COIN0-USDT-SWAP", "COIN1-USDT-SWAP", "COIN2-USDT-SWAP"]
+    assert captured["oi_bulk_called"] is True
+    assert all(row.get("openInterestUsd") is not None for row in rows)
+
+
+def test_radar_clean_direction():
+    assert main.radar_clean_direction("long") == "long"
+    assert main.radar_clean_direction("SHORT") == "short"
+    assert main.radar_clean_direction("买多") == "long"
+    assert main.radar_clean_direction("做空") == "short"
+    assert main.radar_clean_direction("neutral") == "neutral"
+    assert main.radar_clean_direction("garbage") == "neutral"
+
+
+def test_radar_rule_direction():
+    assert main.radar_rule_direction({"riskLevel": "high", "change24hPct": "5"}) == "neutral"
+    assert main.radar_rule_direction({"riskLevel": "low", "change24hPct": "2.0"}) == "long"
+    assert main.radar_rule_direction({"riskLevel": "low", "change24hPct": "-3"}) == "short"
+    assert main.radar_rule_direction({"riskLevel": "low", "change24hPct": "0.5"}) == "neutral"
+    assert main.radar_rule_direction({"riskLevel": "low"}) == "neutral"
+
+
+def _radar_market_summary_with_prices():
+    return {
+        "scan": {"analyzed": 10, "ts": 1},
+        "breadth": {"rising": 8, "falling": 1, "medianChange24hPct": "1.0"},
+        "liquidity": {"playable": 5, "lowLiquidity": 1, "comparableCount": 5},
+        "volatility": {"high": 1},
+        "risk": {"high": 0, "abnormalMoves": 0},
+        "leaders": [
+            {
+                "instId": "BTC-USDT-SWAP",
+                "score": 80,
+                "last": "60000",
+                "high24h": "61000",
+                "low24h": "59000",
+                "change24hPct": "1.5",
+                "volatilityLevel": "medium",
+                "tradabilityStatus": "playable",
+                "entryAssessment": {"summary": "ok"},
+                "fundingRate": "0.0001",
+                "openInterestUsd": "1000000",
+            }
+        ],
+    }
+
+
+def test_radar_parse_market_analysis_bias_and_direction():
+    market_summary = _radar_market_summary_with_prices()
+    parsed = {
+        "marketRegime": "trend",
+        "marketBias": "long",
+        "confidence": 70,
+        "summary": "偏多环境",
+        "highlights": ["a"],
+        "watchlist": [
+            {
+                "instId": "BTC-USDT-SWAP",
+                "reason": "成交充足",
+                "riskNote": "注意止损",
+                "direction": "long",
+                "entryZone": "回踩 59000~60000 分批",
+            }
+        ],
+        "riskWarnings": [],
+        "suggestedFilters": [],
+    }
+    result = main.parse_radar_market_llm_analysis(parsed, market_summary)
+    assert result["marketBias"] == "long"
+    item = result["watchlist"][0]
+    assert item["direction"] == "long"
+    assert "59000" in item["entryZone"]
+
+
+def test_radar_parse_market_analysis_entry_zone_validation():
+    market_summary = _radar_market_summary_with_prices()
+    parsed = {
+        "marketRegime": "mixed",
+        "watchlist": [
+            {"instId": "BTC-USDT-SWAP", "direction": "long", "entryZone": "在 999999 附近买入"}
+        ],
+    }
+    result = main.parse_radar_market_llm_analysis(parsed, market_summary)
+    item = result["watchlist"][0]
+    assert item["direction"] == "long"
+    assert "999999" not in item["entryZone"]
+    assert "59000" in item["entryZone"]
+
+
+def test_radar_fallback_includes_bias_and_direction():
+    market_summary = _radar_market_summary_with_prices()
+    result = main.fallback_radar_market_analysis(market_summary)
+    assert result["marketBias"] == "long"
+    assert result["watchlist"][0]["direction"] == "long"
+    assert "59000" in result["watchlist"][0]["entryZone"]
+
+
+def _explain_result(inst_id, last, high, low):
+    return {
+        "instId": inst_id,
+        "scores": {"opportunity": 70},
+        "riskLevel": "low",
+        "volatilityLevel": "medium",
+        "reasons": [],
+        "warnings": [],
+        "last": str(last),
+        "high24h": str(high),
+        "low24h": str(low),
+    }
+
+
+def _explain_llm_config(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "stored_llm_config",
+        lambda: {"enabled": True, "baseUrl": "https://example.test/v1", "model": "demo", "apiKey": "key"},
+    )
+
+
+def test_radar_explain_embeds_direction_and_entry_zone(monkeypatch):
+    _explain_llm_config(monkeypatch)
+    results = [_explain_result("X-USDT-SWAP", 100, 110, 90)]
+    monkeypatch.setattr(
+        main,
+        "llm_chat_completion",
+        lambda *_a, **_k: {
+            "content": '{"items":[{"instId":"X-USDT-SWAP","reasons":["r"],"warnings":[],"direction":"long","entryZone":"回踩 90~100 分批"}]}',
+        },
+    )
+    explained, warning = main.explain_radar_results_with_llm(results)
+    assert warning == ""
+    assert explained[0]["direction"] == "long"
+    assert explained[0]["entryZone"] == "回踩 90~100 分批"
+    assert explained[0]["explainedBy"] == "llm"
+
+
+def test_radar_explain_entry_zone_out_of_bounds_falls_back(monkeypatch):
+    _explain_llm_config(monkeypatch)
+    results = [_explain_result("X-USDT-SWAP", 100, 110, 90)]
+    monkeypatch.setattr(
+        main,
+        "llm_chat_completion",
+        lambda *_a, **_k: {
+            "content": '{"items":[{"instId":"X-USDT-SWAP","direction":"short","entryZone":"在 999999 附近做空"}]}',
+        },
+    )
+    explained, _ = main.explain_radar_results_with_llm(results)
+    assert explained[0]["direction"] == "short"
+    assert "999999" not in explained[0]["entryZone"]
+    assert "110" in explained[0]["entryZone"]

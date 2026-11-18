@@ -111,11 +111,16 @@ class OkxClient:
         )
         return parse_okx_candles(response.get("data", []))
 
-    def get_history_candles(self, inst_id: str, bar: str, limit: int = 300) -> list[dict[str, str]]:
+    def get_history_candles(
+        self, inst_id: str, bar: str, limit: int = 300, after: str | None = None
+    ) -> list[dict[str, str]]:
+        query = {"instId": inst_id, "bar": bar, "limit": str(limit)}
+        if after:
+            query["after"] = str(after)
         response = self._request(
             "GET",
             "/api/v5/market/history-candles",
-            query={"instId": inst_id, "bar": bar, "limit": str(limit)},
+            query=query,
             auth=False,
         )
         return parse_okx_candles(response.get("data", []))
@@ -212,6 +217,56 @@ class OkxClient:
         )
         return response.get("data", [])
 
+    def get_funding_rate(self, inst_id: str, timeout_seconds: float = 4.0) -> dict[str, Any] | None:
+        try:
+            response = self._public_get("/api/v5/public/funding-rate", {"instId": inst_id}, timeout_seconds)
+        except OkxError:
+            return None
+        rows = response.get("data", [])
+        return rows[0] if rows and isinstance(rows[0], dict) else None
+
+    def get_open_interest_bulk(self, inst_type: str = "SWAP", timeout_seconds: float = 6.0) -> dict[str, str]:
+        """Fetch open interest for every contract of a type in one call.
+
+        Returns a mapping of instId -> open interest in USD (oiUsd). A single
+        bulk call replaces per-contract requests so sentiment enrichment does not
+        fan out into dozens of slow upstream requests."""
+        try:
+            response = self._public_get("/api/v5/public/open-interest", {"instType": inst_type}, timeout_seconds)
+        except OkxError:
+            return {}
+        out: dict[str, str] = {}
+        for row in response.get("data") or []:
+            if not isinstance(row, dict) or not row.get("instId"):
+                continue
+            oi_usd = row.get("oiUsd")
+            if oi_usd is None:
+                oi_usd = row.get("oi")
+            if oi_usd is not None:
+                out[str(row["instId"])] = str(oi_usd)
+        return out
+
+    def _public_get(self, path: str, query: dict[str, str] | None = None, timeout_seconds: float = 4.0) -> dict[str, Any]:
+        """Single-shot public GET with a short timeout and no retry.
+
+        Used by best-effort enrichment where a slow or flaky upstream must never
+        block the request path behind a proxy timeout. Any failure raises OkxError."""
+        query_string = f"?{urlencode(query)}" if query else ""
+        url = f"{self.settings.base_url}{path}{query_string}"
+        request = Request(url, headers={"User-Agent": "okx-dashboard/0.1"}, method="GET")
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                raw_body = response.read().decode("utf-8")
+        except (HTTPError, URLError, http.client.IncompleteRead, TimeoutError, socket.timeout, OSError) as exc:
+            raise OkxError(f"OKX public request failed: {exc}") from exc
+        try:
+            parsed = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise OkxError("OKX public response was not valid JSON") from exc
+        if parsed.get("code") not in {None, "0"}:
+            raise OkxError(okx_error_message(parsed), parsed)
+        return parsed
+
     def get_balance(self) -> dict[str, Any]:
         return self._request("GET", "/api/v5/account/balance", auth=True)
 
@@ -243,6 +298,83 @@ class OkxClient:
         if inst_id:
             query["instId"] = inst_id
         return self._request("GET", "/api/v5/trade/orders-pending", query=query, auth=True)
+
+    # ---- 交易所侧止盈止损条件单（P2-2，字段语义需模拟盘实测确认）----
+
+    def place_algo_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """提交算法单（止盈止损 OCO / 单腿条件单）。"""
+        return self._request("POST", "/api/v5/trade/order-algo", body=payload, auth=True)
+
+    def cancel_algo_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """撤销算法单。payload 需含 algoId 或 algoClOrdId + instId。"""
+        return self._request("POST", "/api/v5/trade/cancel-algo-order", body=payload, auth=True)
+
+    def get_algo_orders(self, inst_id: str | None = None) -> dict[str, Any]:
+        """查询当前未触发的算法单。"""
+        query = _clean_query({"instType": "SWAP", "instId": inst_id})
+        return self._request("GET", "/api/v5/trade/algo-current-orders", query=query, auth=True)
+
+    def get_order(self, ord_id: str, inst_id: str) -> dict[str, Any] | None:
+        """按订单号查询普通订单详情（用于取成交均价 avgPx）。"""
+        query = _clean_query({"ordId": ord_id, "instId": inst_id})
+        response = self._request("GET", "/api/v5/trade/order", query=query, auth=True)
+        rows = response.get("data", [])
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            return rows[0]
+        return None
+
+    def get_trade_bills(
+        self, bill_type: str = "2", limit: int = 100, after: str | None = None
+    ) -> list[dict[str, Any]]:
+        """读取交易账单流水（type=2 为成交）。
+
+        每笔成交流水带 ``clOrdId`` / ``pnl``（该笔已实现毛盈亏）/ ``fee``（手续费，
+        负数扣减）。按 clOrdId 聚合即可得到某个订单的真实、含手续费结算盈亏。
+        这是 OKX 已结算口径，优于此前的「平仓前持仓浮动盈亏」估算。
+
+        ``after`` 为 OKX 的账单游标：返回 billId 早于该值的记录，用于翻页。
+        """
+        query = _clean_query(
+            {"type": str(bill_type), "limit": str(max(1, min(int(limit), 100))), "after": after}
+        )
+        response = self._request("GET", "/api/v5/account/bills", query=query, auth=True)
+        rows = response.get("data", [])
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+    def get_all_trade_bills(
+        self, bill_type: str = "2", limit: int = 100, max_pages: int = 10
+    ) -> list[dict[str, Any]]:
+        """按 billId 游标翻页聚合成交账单，覆盖百笔以上的历史成交。
+
+        OKX ``/api/v5/account/bills`` 单页最多 100 条，按时间倒序返回，``after``
+        游标返回更早记录。循环至返回不足一页、游标不再推进或达到 max_pages 上限，
+        避免异常接口导致无限循环。按 billId 去重，防止游标边界重复。
+        """
+        collected: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        after: str | None = None
+        for _ in range(max(1, max_pages)):
+            page = self.get_trade_bills(bill_type=bill_type, limit=limit, after=after)
+            if not page:
+                break
+            page_added = 0
+            oldest_id: str | None = None
+            for row in page:
+                bill_id = str(row.get("billId") or "").strip()
+                if bill_id:
+                    oldest_id = bill_id  # 页面按时间倒序，最后一条即最早
+                    if bill_id in seen_ids:
+                        continue
+                    seen_ids.add(bill_id)
+                collected.append(row)
+                page_added += 1
+            # 无新增（整页重复）或游标无法推进，停止翻页
+            if page_added == 0 or not oldest_id or oldest_id == after:
+                break
+            after = oldest_id
+            if len(page) < limit:
+                break
+        return collected
 
     def get_staking_defi_offers(
         self,
